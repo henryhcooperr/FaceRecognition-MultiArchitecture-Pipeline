@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific
+outputs/
+data/processed/
+data/raw/*
+!data/raw/.gitkeep
+models/
+*.pth
+*.pt
+*.ckpt
+*.log
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*.avi
+*.mov
+
+# Keep certain directories but ignore their contents
+standalone_face_recognition/data/raw/.gitkeep
+standalone_face_recognition/data/processed/.gitkeep
+standalone_face_recognition/outputs/checkpoints/.gitkeep
+standalone_face_recognition/outputs/visualizations/.gitkeep 
