@@ -62,36 +62,68 @@ celebrity-face-recognition/
 ```
 
 ## Usage
-*Coming soon as features are implemented*
+
+### Data Preprocessing
+```bash
+# Download and verify dataset
+python scripts/download_data.py
+
+# Process and split dataset
+python src/preprocessing/build_dataset.py
+```
+
+### Training
+```bash
+# Train baseline model
+python src/train.py --model baseline --data-dir data/processed --output-dir models/checkpoints
+
+# Train CNN model
+python src/train.py --model cnn --data-dir data/processed --output-dir models/checkpoints
+
+# Train Siamese model
+python src/train.py --model siamese --data-dir data/processed --output-dir models/checkpoints
+```
+
+### Evaluation
+```bash
+# Evaluate model
+python src/evaluate.py --model <model_type> --checkpoint models/checkpoints/<model_type>_best.pth --data-dir data/processed --output-dir reports
+```
+
+### Webcam Demo
+```bash
+# Run webcam demo
+python src/demo/webcam_demo.py --model <model_type> --checkpoint models/checkpoints/<model_type>_best.pth --class-names data/processed/class_names.txt
+```
 
 ## Roadmap / TODO
-- [ ] Environment Setup
-  - [ ] Create requirements.txt
-  - [ ] Set up virtual environment
-  - [ ] Install dependencies
-- [ ] Data Management
-  - [ ] Download and verify dataset
-  - [ ] Implement face detection & alignment
-  - [ ] Build augmentation pipeline
-  - [ ] Generate processed dataset splits
-- [ ] Model Development
-  - [ ] Baseline FC network
-  - [ ] Transfer-learning CNN
-  - [ ] Siamese / metric-learning model
-- [ ] Training & Evaluation
-  - [ ] Implement train.py
-  - [ ] Integrate logging & metrics
-  - [ ] Build evaluate.py with visualizations
-- [ ] Hyperparameter Tuning
-  - [ ] Setup and run hyperparameter tuning
-- [ ] Demo
-  - [ ] Build real-time webcam demo
-- [ ] Testing & CI
-  - [ ] Add unit tests
-  - [ ] Set up CI pipeline
-- [ ] Documentation
-  - [ ] Populate docs/ and slides/
-  - [ ] Write final report
+- [x] Environment Setup
+  - [x] Create requirements.txt
+  - [x] Set up virtual environment
+  - [x] Install dependencies
+- [x] Data Management
+  - [x] Download and verify dataset
+  - [x] Implement face detection & alignment
+  - [x] Build augmentation pipeline
+  - [x] Generate processed dataset splits
+- [x] Model Development
+  - [x] Baseline FC network
+  - [x] Transfer-learning CNN
+  - [x] Siamese / metric-learning model
+- [x] Training & Evaluation
+  - [x] Implement train.py
+  - [x] Integrate logging & metrics
+  - [x] Build evaluate.py with visualizations
+- [x] Hyperparameter Tuning
+  - [x] Setup and run hyperparameter tuning
+- [x] Demo
+  - [x] Build real-time webcam demo
+- [x] Testing & CI
+  - [x] Add unit tests
+  - [x] Set up CI pipeline
+- [x] Documentation
+  - [x] Populate docs/ and slides/
+  - [x] Write final report
 
 ## Contributors & Roles
 - Project Manager & Lead Developer: [Your Name]
@@ -99,4 +131,11 @@ celebrity-face-recognition/
   - Architecture design
   - Code review and quality assurance
 
-*More roles to be added as the project progresses* 
+## Report
+The final report is available in the `report/` directory, containing:
+- Introduction and problem statement
+- Related work and literature review
+- Methodology and implementation details
+- Results and analysis
+- Discussion and future work
+- Conclusion 
