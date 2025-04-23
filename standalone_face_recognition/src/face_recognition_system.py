@@ -207,6 +207,165 @@ def preprocess_image(image_path: str, config: PreprocessingConfig) -> Optional[I
         logger.error(f"Error processing {image_path}: {str(e)}")
         return None
 
+def visualize_transformations(image_path: str, config: PreprocessingConfig, output_dir: Path):
+    """Visualize MTCNN transformations and augmentations on a single image."""
+    try:
+        # Read image
+        image = cv2.imread(str(image_path))
+        if image is None:
+            logger.error(f"Could not read image: {image_path}")
+            return None
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Create figure for visualization
+        fig, axes = plt.subplots(3, 3, figsize=(20, 20))
+        fig.suptitle('Face Processing and Augmentation Steps', fontsize=16)
+        
+        # Original image
+        axes[0, 0].imshow(image)
+        axes[0, 0].set_title('Original Image')
+        axes[0, 0].axis('off')
+        
+        if config.use_mtcnn:
+            # Initialize MTCNN
+            mtcnn = MTCNN(
+                image_size=config.final_size[0],
+                margin=config.face_margin,
+                min_face_size=config.min_face_size,
+                thresholds=config.thresholds,
+                device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            )
+            
+            # Detect face and get landmarks
+            boxes, probs, landmarks = mtcnn.detect(image, landmarks=True)
+            
+            if boxes is None or len(boxes) == 0:
+                logger.warning(f"No face detected in {image_path}")
+                return None
+            
+            # Use the face with highest probability
+            box = boxes[0]
+            landmark = landmarks[0]
+            
+            # Draw bounding box and landmarks on original image
+            img_with_boxes = image.copy()
+            x1, y1, x2, y2 = map(int, box)
+            cv2.rectangle(img_with_boxes, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            for point in landmark:
+                cv2.circle(img_with_boxes, (int(point[0]), int(point[1])), 2, (0, 0, 255), -1)
+            
+            axes[0, 1].imshow(img_with_boxes)
+            axes[0, 1].set_title('Face Detection with Landmarks')
+            axes[0, 1].axis('off')
+            
+            # Get face bbox with margin
+            bbox = get_face_bbox_with_margin(box, config.face_margin, image.shape)
+            
+            # Align face using landmarks
+            aligned_face = align_face(image, landmark)
+            
+            # Draw aligned face with bounding box
+            aligned_with_box = aligned_face.copy()
+            x1, y1, x2, y2 = map(int, bbox)
+            cv2.rectangle(aligned_with_box, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            
+            axes[0, 2].imshow(aligned_with_box)
+            axes[0, 2].set_title('Aligned Face with Margin')
+            axes[0, 2].axis('off')
+            
+            # Final cropped and resized face
+            face = aligned_face[int(bbox[1]):int(bbox[3]), 
+                              int(bbox[0]):int(bbox[2])]
+            face = cv2.resize(face, config.final_size)
+            
+            axes[1, 0].imshow(face)
+            axes[1, 0].set_title('Final Processed Face')
+            axes[1, 0].axis('off')
+            
+            if config.augmentation:
+                # Define augmentation pipeline
+                transform = A.Compose([
+                    A.Rotate(limit=config.aug_rotation_range, p=1.0),
+                    A.RandomBrightnessContrast(
+                        brightness_limit=config.aug_brightness_range,
+                        contrast_limit=config.aug_contrast_range,
+                        p=1.0
+                    ),
+                    A.RandomScale(scale_limit=config.aug_scale_range, p=1.0),
+                    A.HorizontalFlip(p=1.0 if config.horizontal_flip else 0),
+                ])
+                
+                # Apply augmentations
+                augmented = transform(image=face)
+                augmented_face = augmented['image']
+                
+                # Show different augmentations
+                axes[1, 1].imshow(augmented_face)
+                axes[1, 1].set_title('Augmented Face')
+                axes[1, 1].axis('off')
+                
+                # Show another augmentation with different parameters
+                transform2 = A.Compose([
+                    A.Rotate(limit=config.aug_rotation_range, p=1.0),
+                    A.RandomBrightnessContrast(
+                        brightness_limit=config.aug_brightness_range,
+                        contrast_limit=config.aug_contrast_range,
+                        p=1.0
+                    ),
+                    A.RandomScale(scale_limit=config.aug_scale_range, p=1.0),
+                    A.HorizontalFlip(p=1.0 if config.horizontal_flip else 0),
+                ])
+                
+                augmented2 = transform2(image=face)
+                augmented_face2 = augmented2['image']
+                
+                axes[1, 2].imshow(augmented_face2)
+                axes[1, 2].set_title('Another Augmentation')
+                axes[1, 2].axis('off')
+                
+                # Show augmentation parameters
+                params_text = f"Augmentation Parameters:\n"
+                params_text += f"Rotation Range: ±{config.aug_rotation_range}°\n"
+                params_text += f"Brightness Range: ±{config.aug_brightness_range}\n"
+                params_text += f"Contrast Range: ±{config.aug_contrast_range}\n"
+                params_text += f"Scale Range: ±{config.aug_scale_range}\n"
+                params_text += f"Horizontal Flip: {config.horizontal_flip}"
+                
+                axes[2, 0].text(0.1, 0.5, params_text, fontsize=12, va='center')
+                axes[2, 0].axis('off')
+                
+                # Show MTCNN parameters
+                mtcnn_text = f"MTCNN Parameters:\n"
+                mtcnn_text += f"Face Margin: {config.face_margin}\n"
+                mtcnn_text += f"Min Face Size: {config.min_face_size}\n"
+                mtcnn_text += f"Final Size: {config.final_size}\n"
+                mtcnn_text += f"Thresholds: {config.thresholds}"
+                
+                axes[2, 1].text(0.1, 0.5, mtcnn_text, fontsize=12, va='center')
+                axes[2, 1].axis('off')
+                
+                # Show original image size
+                size_text = f"Original Image Size:\n"
+                size_text += f"Width: {image.shape[1]}\n"
+                size_text += f"Height: {image.shape[0]}\n"
+                size_text += f"Channels: {image.shape[2]}"
+                
+                axes[2, 2].text(0.1, 0.5, size_text, fontsize=12, va='center')
+                axes[2, 2].axis('off')
+            
+            # Save visualization
+            plt.tight_layout()
+            plt.savefig(output_dir / f'transformations_{Path(image_path).stem}.png')
+            plt.close()
+            
+            return face
+        
+        return image
+    
+    except Exception as e:
+        logger.error(f"Error visualizing transformations for {image_path}: {str(e)}")
+        return None
+
 def process_raw_data(config: PreprocessingConfig,
                     split_ratio: Tuple[float, float, float] = (0.7, 0.15, 0.15)):
     """Process raw data with given preprocessing configuration."""
@@ -219,6 +378,10 @@ def process_raw_data(config: PreprocessingConfig,
         if split_dir.exists():
             shutil.rmtree(split_dir)
         split_dir.mkdir(parents=True)
+    
+    # Create visualization directory
+    viz_dir = processed_base / "transformations"
+    viz_dir.mkdir(parents=True, exist_ok=True)
     
     # Save preprocessing configuration
     config_path = processed_base / "preprocessing_config.json"
@@ -251,6 +414,10 @@ def process_raw_data(config: PreprocessingConfig,
             split_class_dir = processed_base / split / class_name
             split_class_dir.mkdir(exist_ok=True)
             
+            # Visualize transformations for the first image of each class
+            if split == "train" and len(list(viz_dir.glob(f"*_{class_name}_*"))) == 0:
+                visualize_transformations(str(files[0]), config, viz_dir)
+            
             for file in tqdm(files, desc=f"Processing {split}/{class_name}"):
                 processed_face = preprocess_image(str(file), config)
                 if processed_face is not None:
@@ -258,6 +425,7 @@ def process_raw_data(config: PreprocessingConfig,
                     processed_face.save(save_path)
     
     logger.info("Data processing complete!")
+    logger.info(f"Transformation visualizations saved in: {viz_dir}")
     return processed_base
 
 def get_preprocessing_config() -> PreprocessingConfig:

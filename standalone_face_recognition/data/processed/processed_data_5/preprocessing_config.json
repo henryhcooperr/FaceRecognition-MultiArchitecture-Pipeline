@@ -1,0 +1,21 @@
+{
+    "name": "processed_data_5",
+    "use_mtcnn": true,
+    "face_margin": 0.2,
+    "final_size": [
+        224,
+        224
+    ],
+    "min_face_size": 20,
+    "thresholds": [
+        0.6,
+        0.7,
+        0.7
+    ],
+    "augmentation": true,
+    "aug_rotation_range": 40,
+    "aug_brightness_range": 2.0,
+    "aug_contrast_range": 2.0,
+    "aug_scale_range": 0.3,
+    "horizontal_flip": true
+}
