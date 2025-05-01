@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-Standalone Face Recognition System with Automatic Data Management
-This file contains all the functionality of the face recognition system in one place,
-with automatic data organization and processing.
-"""
 
 import os
 import sys
@@ -206,8 +201,8 @@ def preprocess_image(image_path: str, config: PreprocessingConfig) -> Optional[I
         logger.error(f"Error processing {image_path}: {str(e)}")
         return None
 
-def visualize_transformations(image_path: str, config: PreprocessingConfig, output_dir: Path):
-    """Visualize MTCNN transformations and augmentations on a single image."""
+def visualize_preprocessing_steps(image_path: str, config: PreprocessingConfig, output_dir: Path):
+    """Visualize preprocessing steps for a single image."""
     try:
         # Read image
         image = cv2.imread(str(image_path))
@@ -217,8 +212,8 @@ def visualize_transformations(image_path: str, config: PreprocessingConfig, outp
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
         # Create figure for visualization
-        fig, axes = plt.subplots(3, 3, figsize=(20, 20))
-        fig.suptitle('Face Processing and Augmentation Steps', fontsize=16)
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        fig.suptitle('Preprocessing Steps', fontsize=16)
         
         # Original image
         axes[0, 0].imshow(image)
@@ -330,31 +325,13 @@ def visualize_transformations(image_path: str, config: PreprocessingConfig, outp
                 params_text += f"Scale Range: ±{config.aug_scale_range}\n"
                 params_text += f"Horizontal Flip: {config.horizontal_flip}"
                 
-                axes[2, 0].text(0.1, 0.5, params_text, fontsize=12, va='center')
-                axes[2, 0].axis('off')
-                
-                # Show MTCNN parameters
-                mtcnn_text = f"MTCNN Parameters:\n"
-                mtcnn_text += f"Face Margin: {config.face_margin}\n"
-                mtcnn_text += f"Min Face Size: {config.min_face_size}\n"
-                mtcnn_text += f"Final Size: {config.final_size}\n"
-                mtcnn_text += f"Thresholds: {config.thresholds}"
-                
-                axes[2, 1].text(0.1, 0.5, mtcnn_text, fontsize=12, va='center')
-                axes[2, 1].axis('off')
-                
-                # Show original image size
-                size_text = f"Original Image Size:\n"
-                size_text += f"Width: {image.shape[1]}\n"
-                size_text += f"Height: {image.shape[0]}\n"
-                size_text += f"Channels: {image.shape[2]}"
-                
-                axes[2, 2].text(0.1, 0.5, size_text, fontsize=12, va='center')
-                axes[2, 2].axis('off')
+                # Add text box with parameters
+                plt.figtext(0.02, 0.02, params_text, fontsize=10, 
+                           bbox=dict(facecolor='white', alpha=0.8))
             
             # Save visualization
             plt.tight_layout()
-            plt.savefig(output_dir / f'transformations_{Path(image_path).stem}.png')
+            plt.savefig(output_dir / f'preprocessing_{Path(image_path).stem}.png')
             plt.close()
             
             return face
@@ -362,7 +339,7 @@ def visualize_transformations(image_path: str, config: PreprocessingConfig, outp
         return image
     
     except Exception as e:
-        logger.error(f"Error visualizing transformations for {image_path}: {str(e)}")
+        logger.error(f"Error visualizing preprocessing for {image_path}: {str(e)}")
         return None
 
 def process_raw_data(config: PreprocessingConfig,
@@ -377,6 +354,10 @@ def process_raw_data(config: PreprocessingConfig,
         if split_dir.exists():
             shutil.rmtree(split_dir)
         split_dir.mkdir(parents=True)
+    
+    # Create visualization directory
+    viz_dir = processed_base / "preprocessing_visualizations"
+    viz_dir.mkdir(exist_ok=True)
     
     # Save preprocessing configuration
     config_path = processed_base / "preprocessing_config.json"
@@ -406,6 +387,14 @@ def process_raw_data(config: PreprocessingConfig,
         val_files = image_files[n_train:n_train + n_val]
         test_files = image_files[n_train + n_val:]
         
+        # Create class-specific visualization directory
+        class_viz_dir = viz_dir / class_name
+        class_viz_dir.mkdir(exist_ok=True)
+        
+        # Visualize preprocessing for first 3 images
+        for i, file in enumerate(image_files[:3]):
+            visualize_preprocessing_steps(str(file), config, class_viz_dir)
+        
         # Process and save files
         for split, files in [("train", train_files), 
                            ("val", val_files), 
@@ -424,6 +413,7 @@ def process_raw_data(config: PreprocessingConfig,
                     continue
     
     logger.info("Data processing complete!")
+    logger.info(f"Preprocessing visualizations saved in: {viz_dir}")
     return processed_base
 
 def get_preprocessing_config() -> PreprocessingConfig:
