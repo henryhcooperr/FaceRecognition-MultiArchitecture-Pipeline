@@ -24,7 +24,7 @@ standalone_face_recognition/
 
 1. Install the required dependencies:
 ```bash
-pip install torch torchvision numpy matplotlib seaborn scikit-learn pandas tqdm pillow
+pip install torch torchvision numpy matplotlib seaborn scikit-learn pandas tqdm pillow facenet-pytorch albumentations optuna ray
 ```
 
 2. Organize your raw data:
@@ -47,33 +47,35 @@ data/raw/
 
 ## Usage
 
-Run the script:
+Run the main script:
 ```bash
 python src/face_recognition_system.py
 ```
 
-The interactive menu provides the following options:
+The system provides an interactive menu with the following options:
 
 1. **Process Raw Data**
-   - Automatically splits your raw data into train/val/test sets
-   - Customizable split ratios (default: 70% train, 15% val, 15% test)
+   - Configure preprocessing settings
+   - Apply face detection and alignment
+   - Split data into train/val/test sets
 
-2. **Train New Model**
+2. **Train Model**
    - Choose model type (baseline/cnn/siamese)
-   - Set training parameters (batch size, epochs)
-   - Automatically saves checkpoints and visualizations
+   - Select processed dataset
+   - Configure training parameters
 
 3. **Evaluate Model**
-   - Evaluates model on test set
-   - Generates confusion matrix, ROC curve, and PR curve
-   - Saves visualizations to outputs/visualizations/
+   - Comprehensive evaluation metrics
+   - Visualizations and analysis
+   - Performance benchmarking
 
-4. **Predict Single Image**
-   - Load a trained model
-   - Make prediction on a single image
-   - Shows predicted class and confidence score
+4. **List Processed Datasets**
+   - View available processed datasets
+   - Check preprocessing configurations
 
-5. **Exit**
+5. **List Trained Models**
+   - View available trained models
+   - Check model versions and types
 
 ## Model Types
 
@@ -90,6 +92,30 @@ The interactive menu provides the following options:
    - For face verification/comparison
    - Good for few-shot learning
 
+## Evaluation Metrics
+
+The system provides comprehensive evaluation metrics:
+
+1. **Classification Metrics**
+   - Accuracy
+   - Precision
+   - Recall
+   - F1 Score
+   - ROC AUC
+   - PR AUC
+
+2. **Visualizations**
+   - Confusion Matrix
+   - ROC Curves
+   - Precision-Recall Curves
+   - Grad-CAM Visualizations
+   - t-SNE Embeddings
+
+3. **Performance Metrics**
+   - Training/Validation/Test Loss
+   - Inference Time
+   - Cross-entropy Loss
+
 ## Outputs
 
 - **Checkpoints**: Saved in `outputs/checkpoints/`
@@ -102,6 +128,7 @@ The interactive menu provides the following options:
   - ROC curve
   - Precision-Recall curve
   - t-SNE visualization of embeddings
+  - Grad-CAM visualizations
 
 ## Notes
 
@@ -109,4 +136,5 @@ The interactive menu provides the following options:
 - All paths are relative to the project root
 - GPU support is automatic if available
 - Models can be resumed from checkpoints
-- Visualizations are automatically generated and saved 
+- Visualizations are automatically generated and saved
+- Comprehensive error handling and logging 

@@ -21,7 +21,7 @@ from torchvision import datasets, transforms, models
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_curve, precision_score, recall_score, f1_score
+from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_curve, precision_score, recall_score, f1_score, accuracy_score, roc_auc_score, average_precision_score
 from sklearn.manifold import TSNE
 import pandas as pd
 from tqdm import tqdm
@@ -32,6 +32,13 @@ from facenet_pytorch import MTCNN
 import cv2
 import json
 import albumentations as A
+import optuna
+import ray
+from ray import tune
+from ray.tune.schedulers import ASHAScheduler
+from ray.tune.search.optuna import OptunaSearch
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+import time
 
 # Project structure
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -65,27 +72,21 @@ class PreprocessingConfig:
                  use_mtcnn: bool = True,
                  face_margin: float = 0.4,
                  final_size: Tuple[int, int] = (224, 224),
-                 min_face_size: int = 20,
-                 thresholds: List[float] = [0.6, 0.7, 0.7],
-                 augmentation: bool = True,
-                 aug_rotation_range: int = 20,
-                 aug_brightness_range: float = 0.2,
-                 aug_contrast_range: float = 0.2,
-                 aug_scale_range: float = 0.1,
-                 horizontal_flip: bool = True):
-        """Initialize preprocessing configuration."""
+                 augmentation: bool = True):
+        """Initialize preprocessing configuration with simplified parameters."""
         self.name = name
         self.use_mtcnn = use_mtcnn
         self.face_margin = face_margin
         self.final_size = final_size
-        self.min_face_size = min_face_size
-        self.thresholds = thresholds
+        self.min_face_size = 20  # Fixed reasonable default
+        self.thresholds = [0.6, 0.7, 0.7]  # Fixed MTCNN defaults
         self.augmentation = augmentation
-        self.aug_rotation_range = aug_rotation_range
-        self.aug_brightness_range = aug_brightness_range
-        self.aug_contrast_range = aug_contrast_range
-        self.aug_scale_range = aug_scale_range
-        self.horizontal_flip = horizontal_flip
+        # Fixed augmentation parameters with reasonable defaults
+        self.aug_rotation_range = 20
+        self.aug_brightness_range = 0.2
+        self.aug_contrast_range = 0.2
+        self.aug_scale_range = 0.1
+        self.horizontal_flip = True
 
     def to_dict(self) -> Dict:
         """Convert config to dictionary for saving."""
@@ -146,7 +147,6 @@ def preprocess_image(image_path: str, config: PreprocessingConfig) -> Optional[I
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
         if config.use_mtcnn:
-            # Initialize MTCNN if not already initialized
             mtcnn = MTCNN(
                 image_size=config.final_size[0],
                 margin=config.face_margin,
@@ -155,7 +155,6 @@ def preprocess_image(image_path: str, config: PreprocessingConfig) -> Optional[I
                 device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             )
             
-            # Detect face and get landmarks
             boxes, probs, landmarks = mtcnn.detect(image, landmarks=True)
             
             if boxes is None or len(boxes) == 0:
@@ -379,10 +378,6 @@ def process_raw_data(config: PreprocessingConfig,
             shutil.rmtree(split_dir)
         split_dir.mkdir(parents=True)
     
-    # Create visualization directory
-    viz_dir = processed_base / "transformations"
-    viz_dir.mkdir(parents=True, exist_ok=True)
-    
     # Save preprocessing configuration
     config_path = processed_base / "preprocessing_config.json"
     with open(config_path, 'w') as f:
@@ -395,6 +390,10 @@ def process_raw_data(config: PreprocessingConfig,
             
         class_name = class_dir.name
         image_files = list(class_dir.glob("*.jpg")) + list(class_dir.glob("*.png"))
+        if not image_files:
+            logger.warning(f"No images found in {class_dir}")
+            continue
+            
         shuffle(image_files)
         
         # Calculate split sizes
@@ -414,18 +413,17 @@ def process_raw_data(config: PreprocessingConfig,
             split_class_dir = processed_base / split / class_name
             split_class_dir.mkdir(exist_ok=True)
             
-            # Visualize transformations for the first image of each class
-            if split == "train" and len(list(viz_dir.glob(f"*_{class_name}_*"))) == 0:
-                visualize_transformations(str(files[0]), config, viz_dir)
-            
             for file in tqdm(files, desc=f"Processing {split}/{class_name}"):
-                processed_face = preprocess_image(str(file), config)
-                if processed_face is not None:
-                    save_path = split_class_dir / file.name
-                    processed_face.save(save_path)
+                try:
+                    processed_face = preprocess_image(str(file), config)
+                    if processed_face is not None:
+                        save_path = split_class_dir / file.name
+                        processed_face.save(save_path)
+                except Exception as e:
+                    logger.error(f"Error processing {file}: {str(e)}")
+                    continue
     
     logger.info("Data processing complete!")
-    logger.info(f"Transformation visualizations saved in: {viz_dir}")
     return processed_base
 
 def get_preprocessing_config() -> PreprocessingConfig:
@@ -438,15 +436,8 @@ def get_preprocessing_config() -> PreprocessingConfig:
     
     if use_mtcnn:
         face_margin = float(input("Enter face margin (default 0.4): ") or "0.4")
-        min_face_size = int(input("Enter minimum face size (default 20): ") or "20")
-        thresholds = [0.6, 0.7, 0.7]  # Default MTCNN thresholds
-        thresh_input = input("Enter MTCNN thresholds (default 0.6,0.7,0.7): ")
-        if thresh_input:
-            thresholds = [float(x) for x in thresh_input.split(",")]
     else:
         face_margin = 0.4
-        min_face_size = 20
-        thresholds = [0.6, 0.7, 0.7]
     
     size_input = input("Enter final image size as width,height (default 224,224): ")
     if size_input:
@@ -456,32 +447,12 @@ def get_preprocessing_config() -> PreprocessingConfig:
     
     use_augmentation = get_user_confirmation("Use data augmentation? (y/n): ")
     
-    if use_augmentation:
-        rotation_range = int(input("Enter rotation range in degrees (default 20): ") or "20")
-        brightness_range = float(input("Enter brightness adjustment range (default 0.2): ") or "0.2")
-        contrast_range = float(input("Enter contrast adjustment range (default 0.2): ") or "0.2")
-        scale_range = float(input("Enter scale adjustment range (default 0.1): ") or "0.1")
-        horizontal_flip = get_user_confirmation("Enable horizontal flip? (y/n): ")
-    else:
-        rotation_range = 20
-        brightness_range = 0.2
-        contrast_range = 0.2
-        scale_range = 0.1
-        horizontal_flip = True
-    
     return PreprocessingConfig(
         name=name,
         use_mtcnn=use_mtcnn,
         face_margin=face_margin,
         final_size=final_size,
-        min_face_size=min_face_size,
-        thresholds=thresholds,
-        augmentation=use_augmentation,
-        aug_rotation_range=rotation_range,
-        aug_brightness_range=brightness_range,
-        aug_contrast_range=contrast_range,
-        aug_scale_range=scale_range,
-        horizontal_flip=horizontal_flip
+        augmentation=use_augmentation
     )
 
 class BaselineNet(nn.Module):
@@ -619,164 +590,66 @@ def get_criterion(model_type: str) -> nn.Module:
     else:
         raise ValueError(f"Invalid model type: {model_type}")
 
-def train_epoch(model: nn.Module, train_loader: DataLoader, criterion: nn.Module,
-               optimizer: optim.Optimizer, device: torch.device, model_type: str) -> float:
-    """Train for one epoch."""
-    model.train()
-    total_loss = 0
-    
-    for batch in tqdm(train_loader, desc='Training'):
-        if model_type == 'siamese':
-            img1, img2, label = batch
-            img1, img2, label = img1.to(device), img2.to(device), label.to(device)
-            out1, out2 = model(img1, img2)
-            loss = criterion(out1, out2, label)
-        else:
-            images, labels = batch
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-        
-    return total_loss / len(train_loader)
-
-def validate(model: nn.Module, val_loader: DataLoader, criterion: nn.Module,
-            device: torch.device, model_type: str) -> Tuple[float, float]:
-    """Validate the model."""
-    model.eval()
-    total_loss = 0
-    correct = 0
-    total = 0
-    
-    with torch.no_grad():
-        for batch in tqdm(val_loader, desc='Validating'):
-            if model_type == 'siamese':
-                img1, img2, label = batch
-                img1, img2, label = img1.to(device), img2.to(device), label.to(device)
-                out1, out2 = model(img1, img2)
-                loss = criterion(out1, out2, label)
-                dist = torch.pairwise_distance(out1, out2)
-                pred = (dist < 0.5).float()
-                correct += (pred == label).sum().item()
-                total += label.size(0)
-            else:
-                images, labels = batch
-                images, labels = images.to(device), labels.to(device)
-                outputs = model(images)
-                loss = criterion(outputs, labels)
-                _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-                
-            total_loss += loss.item()
-            
-    accuracy = 100 * correct / total
-    return total_loss / len(val_loader), accuracy
-
-def plot_training_progress(train_losses: List[float], val_losses: List[float],
-                         val_accuracies: List[float], output_dir: str, model_name: str):
-    """Plot and save training progress."""
-    epochs = range(1, len(train_losses) + 1)
-    
-    # Create model-specific directory
-    model_viz_dir = Path(output_dir) / model_name
-    model_viz_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Plot losses
-    plt.figure(figsize=(10, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(epochs, train_losses, 'b-', label='Training Loss')
-    plt.plot(epochs, val_losses, 'r-', label='Validation Loss')
-    plt.title(f'{model_name} - Training and Validation Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    
-    # Plot accuracy
-    plt.subplot(1, 2, 2)
-    plt.plot(epochs, val_accuracies, 'g-', label='Validation Accuracy')
-    plt.title(f'{model_name} - Validation Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy (%)')
-    plt.legend()
-    
-    plt.tight_layout()
-    plt.savefig(model_viz_dir / 'training_progress.png')
-    plt.close()
-
 class SiameseDataset(Dataset):
     """Dataset for Siamese network training."""
-    def __init__(self, root_dir, transform=None):
+    def __init__(self, root_dir: str, transform=None):
         self.root_dir = Path(root_dir)
         self.transform = transform
-        
-        # Get all valid class directories (only directories, not files)
-        self.classes = [d.name for d in self.root_dir.iterdir() if d.is_dir()]
-        if not self.classes:
-            raise ValueError(f"No class directories found in {root_dir}")
-        
-        self.classes = sorted(self.classes)
-        self.class_to_idx = {cls: idx for idx, cls in enumerate(self.classes)}
+        self.classes = sorted([d.name for d in self.root_dir.iterdir() if d.is_dir()])
+        self.class_to_idx = {cls_name: i for i, cls_name in enumerate(self.classes)}
         
         # Get all image paths and their labels
         self.images = []
         self.labels = []
         for class_name in self.classes:
             class_dir = self.root_dir / class_name
-            if not class_dir.is_dir():
-                continue
-                
-            for img_path in class_dir.glob("*.[jp][pn][g]"):  # matches .jpg, .png, .jpeg
-                if img_path.is_file():  # Make sure it's a file
-                    self.images.append(img_path)
-                    self.labels.append(self.class_to_idx[class_name])
+            for img_path in class_dir.glob("*.jpg"):
+                self.images.append(img_path)
+                self.labels.append(self.class_to_idx[class_name])
+    
+    def __len__(self):
+        return len(self.images)
+    
+    def __getitem__(self, idx):
+        img1_path = self.images[idx]
+        label1 = self.labels[idx]
         
-        if not self.images:
-            raise ValueError(f"No valid images found in {root_dir}")
-            
-        self.labels = np.array(self.labels)
-        logger.info(f"Loaded {len(self.images)} images from {len(self.classes)} classes in {root_dir}")
-        
-    def __getitem__(self, index):
-        # Get the first image
-        img1_path = self.images[index]
-        img1 = Image.open(img1_path).convert('RGB')
-        label1 = self.labels[index]
-        
-        # Randomly decide if we want a same-class pair (1) or different-class pair (0)
-        should_get_same_class = random.randint(0, 1)
+        # Randomly decide if we want a positive or negative pair
+        should_get_same_class = random.random() > 0.5
         
         if should_get_same_class:
             # Get another image from the same class
-            same_class_indices = np.where(self.labels == label1)[0]
-            same_class_indices = same_class_indices[same_class_indices != index]  # Remove current index
-            if len(same_class_indices) == 0:  # If no other images in class, use same image
-                img2_path = img1_path
-            else:
-                img2_path = self.images[np.random.choice(same_class_indices)]
+            while True:
+                idx2 = random.randrange(len(self.images))
+                if self.labels[idx2] == label1 and idx2 != idx:
+                    break
         else:
             # Get an image from a different class
-            other_class_indices = np.where(self.labels != label1)[0]
-            img2_path = self.images[np.random.choice(other_class_indices)]
+            while True:
+                idx2 = random.randrange(len(self.images))
+                if self.labels[idx2] != label1:
+                    break
         
+        img2_path = self.images[idx2]
+        label2 = self.labels[idx2]
+        
+        # Load and transform images
+        img1 = Image.open(img1_path).convert('RGB')
         img2 = Image.open(img2_path).convert('RGB')
         
         if self.transform:
             img1 = self.transform(img1)
             img2 = self.transform(img2)
         
-        return img1, img2, torch.FloatTensor([float(not should_get_same_class)])  # Convert to float for BCE loss
-    
-    def __len__(self):
-        return len(self.images)
+        # Label is 1 for same class, 0 for different classes
+        label = 1 if label1 == label2 else 0
+        
+        return img1, img2, label
 
-def train_model(model_type: str, model_name: Optional[str] = None, batch_size: int = 32, epochs: int = 50,
+def train_model(model_type: str, model_name: Optional[str] = None,
+                batch_size: int = 32, epochs: int = 50,
                 lr: float = 0.001, weight_decay: float = 1e-4):
-    """Train a face recognition model."""
+    """Train a face recognition model with simplified parameters."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
     
@@ -788,17 +661,6 @@ def train_model(model_type: str, model_name: Optional[str] = None, batch_size: i
     print("\nAvailable processed datasets:")
     for i, d in enumerate(processed_dirs, 1):
         print(f"{i}. {d.name}")
-        # Try to load and display config info
-        config_file = d / "preprocessing_config.json"
-        if config_file.exists():
-            try:
-                with open(config_file) as f:
-                    config = json.load(f)
-                print(f"   - MTCNN: {config.get('use_mtcnn', 'N/A')}")
-                print(f"   - Face Margin: {config.get('face_margin', 'N/A')}")
-                print(f"   - Image Size: {config.get('final_size', 'N/A')}")
-            except:
-                pass
     
     while True:
         dataset_choice = input("\nEnter dataset number to use for training: ")
@@ -816,12 +678,10 @@ def train_model(model_type: str, model_name: Optional[str] = None, batch_size: i
     
     # Generate model name if not provided
     if model_name is None:
-        # Find existing models of this type
         existing_models = list(CHECKPOINTS_DIR.glob(f'best_model_{model_type}_*.pth'))
         version = len(existing_models) + 1
         model_name = f"{model_type}_v{version}"
     else:
-        # Clean the model name to be filesystem friendly
         model_name = "".join(c for c in model_name if c.isalnum() or c in ('-', '_')).lower()
         model_name = f"{model_type}_{model_name}"
     
@@ -839,77 +699,62 @@ def train_model(model_type: str, model_name: Optional[str] = None, batch_size: i
                            std=[0.229, 0.224, 0.225])
     ])
     
-    # Load datasets based on model type
-    if model_type == 'siamese':
-        train_dataset = SiameseDataset(selected_data_dir / "train", transform=transform)
-        val_dataset = SiameseDataset(selected_data_dir / "val", transform=transform)
-    else:
-        train_dataset = datasets.ImageFolder(selected_data_dir / "train", transform=transform)
-        val_dataset = datasets.ImageFolder(selected_data_dir / "val", transform=transform)
+    # Load datasets
+    train_dataset = datasets.ImageFolder(selected_data_dir / "train", transform=transform)
+    val_dataset = datasets.ImageFolder(selected_data_dir / "val", transform=transform)
     
-    # For Siamese network, use simpler DataLoader config to avoid multiprocessing issues
-    if model_type == 'siamese':
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                                num_workers=0, pin_memory=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size,
-                              num_workers=0, pin_memory=True)
-    else:
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                                num_workers=2, persistent_workers=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size,
-                              num_workers=2, persistent_workers=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
     
     # Initialize model
-    num_classes = len(train_dataset.classes) if model_type != 'siamese' else 2
-    model = get_model(model_type, num_classes).to(device)
+    model = get_model(model_type, num_classes=len(train_dataset.classes))
+    model = model.to(device)
     
     # Setup training
     criterion = get_criterion(model_type)
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
     
     # Training loop
-    best_val_acc: float = 0.0
-    train_losses = []
-    val_losses = []
-    val_accuracies = []
-    
-    try:
-        for epoch in range(1, epochs + 1):
-            logger.info(f"Epoch {epoch}/{epochs}")
-            
-            train_loss = train_epoch(model, train_loader, criterion, optimizer, device, model_type)
-            val_loss, val_acc = validate(model, val_loader, criterion, device, model_type)
-            
-            train_losses.append(train_loss)
-            val_losses.append(val_loss)
-            val_accuracies.append(val_acc)
-            
-            logger.info(f"Train Loss: {train_loss:.4f}")
-            logger.info(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
-            
-            # Save best model
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-                torch.save(model.state_dict(), 
-                          model_checkpoint_dir / 'best_model.pth')
-            
-            # Save checkpoint
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'train_loss': train_loss,
-                'val_loss': val_loss,
-                'val_acc': val_acc
-            }, model_checkpoint_dir / 'checkpoint.pth')
-            
-            # Plot progress
-            plot_training_progress(train_losses, val_losses, val_accuracies,
-                                 str(VISUALIZATIONS_DIR), model_name)
-    
-    except Exception as e:
-        logger.error(f"Error during training: {str(e)}")
-        raise
+    best_val_loss = float('inf')
+    for epoch in range(epochs):
+        # Training phase
+        model.train()
+        train_loss = 0
+        for batch_idx, (data, target) in enumerate(train_loader):
+            data, target = data.to(device), target.to(device)
+            optimizer.zero_grad()
+            output = model(data)
+            loss = criterion(output, target)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item()
+        
+        # Validation phase
+        model.eval()
+        val_loss = 0
+        correct = 0
+        with torch.no_grad():
+            for data, target in val_loader:
+                data, target = data.to(device), target.to(device)
+                output = model(data)
+                val_loss += criterion(output, target).item()
+                pred = output.argmax(dim=1, keepdim=True)
+                correct += pred.eq(target.view_as(pred)).sum().item()
+        
+        train_loss /= len(train_loader)
+        val_loss /= len(val_loader)
+        accuracy = 100. * correct / len(val_dataset)
+        
+        logger.info(f'Epoch {epoch+1}/{epochs}:')
+        logger.info(f'Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Accuracy: {accuracy:.2f}%')
+        
+        # Save best model
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), model_checkpoint_dir / 'best_model.pth')
+        
+        scheduler.step(val_loss)
     
     return model_name
 
@@ -925,60 +770,65 @@ def generate_gradcam(model: nn.Module, image_tensor: torch.Tensor,
     
     def forward_hook(module, input, output):
         activations.append(output)
-        
+    
     def backward_hook(module, grad_input, grad_output):
         gradients.append(grad_output[0])
     
-    # Register hooks
+    # Register hooks using the full backward hook
     handle1 = target_layer.register_forward_hook(forward_hook)
-    handle2 = target_layer.register_backward_hook(backward_hook)
+    handle2 = target_layer.register_full_backward_hook(backward_hook)
     
-    # Forward pass
-    if model_type == 'siamese':
-        # For Siamese network, we use the same image as both inputs
-        output1, output2 = model(image_tensor, image_tensor)
-        output = torch.pairwise_distance(output1, output2)  # Calculate distance
-    else:
-        output = model(image_tensor)
+    try:
+        # Forward pass
+        if model_type == 'siamese':
+            # For Siamese network, we use the same image as both inputs
+            output1, output2 = model(image_tensor, image_tensor)
+            output = torch.pairwise_distance(output1, output2)  # Calculate distance
+        else:
+            output = model(image_tensor)
+        
+        if isinstance(output, tuple):
+            output = output[0]
+        
+        # Get the score
+        score = torch.max(output)
+        
+        # Backward pass
+        model.zero_grad()
+        score.backward()
+        
+        # Get activations and gradients
+        activation = activations[0].detach()
+        gradient = gradients[0].detach()
+        
+        # Global average pooling of gradients
+        weights = torch.mean(gradient, dim=(2, 3), keepdim=True)
+        
+        # Weight the activations
+        cam = torch.sum(weights * activation, dim=1, keepdim=True)
+        cam = F.relu(cam)  # Apply ReLU
+        
+        # Normalize
+        cam = F.interpolate(cam, size=(224, 224), mode='bilinear', align_corners=False)
+        cam = cam - cam.min()
+        cam = cam / (cam.max() + 1e-8)
+        
+        # Convert to numpy and return
+        return cam.squeeze().cpu().numpy()
     
-    if isinstance(output, tuple):
-        output = output[0]
+    except Exception as e:
+        logger.error(f"Error generating Grad-CAM: {str(e)}")
+        return None
     
-    # Get the score
-    score = torch.max(output)
-    
-    # Backward pass
-    model.zero_grad()
-    score.backward()
-    
-    # Get activations and gradients
-    activation = activations[0].detach()
-    gradient = gradients[0].detach()
-    
-    # Global average pooling of gradients
-    weights = torch.mean(gradient, dim=(2, 3), keepdim=True)
-    
-    # Weight the activations
-    cam = torch.sum(weights * activation, dim=1, keepdim=True)
-    cam = F.relu(cam)  # Apply ReLU
-    
-    # Normalize
-    cam = F.interpolate(cam, size=(224, 224), mode='bilinear', align_corners=False)
-    cam = cam - cam.min()
-    cam = cam / (cam.max() + 1e-8)
-    
-    # Clean up
-    handle1.remove()
-    handle2.remove()
-    
-    # Convert to numpy and return
-    return cam.squeeze().cpu().numpy()
+    finally:
+        # Clean up hooks
+        handle1.remove()
+        handle2.remove()
 
 def plot_gradcam_visualization(model: nn.Module, dataset: Dataset, 
                              num_samples: int, output_dir: str, model_name: str):
     """Plot Grad-CAM visualizations for sample images."""
     device = next(model.parameters()).device
-    fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5*num_samples))
     
     # Get target layer based on model type
     if isinstance(model, ResNetTransfer):
@@ -991,43 +841,66 @@ def plot_gradcam_visualization(model: nn.Module, dataset: Dataset,
         target_layer = model.conv[-3]  # Last conv layer
         model_type = 'siamese'
     
-    for i in range(num_samples):
-        # Get random sample
-        idx = random.randint(0, len(dataset)-1)
-        if isinstance(dataset, SiameseDataset):
-            img1, _, _ = dataset[idx]
-            image = img1
-        else:
-            image, label = dataset[idx]
-        
-        # Convert to tensor and add batch dimension
-        img_tensor = image.unsqueeze(0).to(device)
-        
-        # Generate Grad-CAM
-        cam = generate_gradcam(model, img_tensor, target_layer, model_type)
-        
-        # Convert tensor to numpy for plotting
-        img_np = image.permute(1, 2, 0).cpu().numpy()
-        img_np = (img_np * [0.229, 0.224, 0.225] + [0.485, 0.456, 0.406]).clip(0, 1)
-        
-        # Plot original image
-        axes[i, 0].imshow(img_np)
-        axes[i, 0].set_title('Original Image')
-        axes[i, 0].axis('off')
-        
-        # Plot heatmap
-        axes[i, 1].imshow(cam, cmap='jet')
-        axes[i, 1].set_title('Grad-CAM Heatmap')
-        axes[i, 1].axis('off')
-        
-        # Plot overlay
-        heatmap = cv2.applyColorMap(np.uint8(255 * cam), cv2.COLORMAP_JET)
-        heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-        overlay = (0.7 * img_np + 0.3 * heatmap/255).clip(0, 1)
-        
-        axes[i, 2].imshow(overlay)
-        axes[i, 2].set_title('Overlay')
-        axes[i, 2].axis('off')
+    # Create figure for visualization
+    fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5*num_samples))
+    if num_samples == 1:
+        axes = axes.reshape(1, -1)
+    
+    successful_samples = 0
+    max_attempts = num_samples * 3  # Try up to 3 times the number of samples
+    attempts = 0
+    
+    while successful_samples < num_samples and attempts < max_attempts:
+        attempts += 1
+        try:
+            # Get random sample
+            idx = random.randint(0, len(dataset)-1)
+            if isinstance(dataset, SiameseDataset):
+                img1, _, _ = dataset[idx]
+                image = img1
+            else:
+                image, label = dataset[idx]
+            
+            # Convert to tensor and add batch dimension
+            img_tensor = image.unsqueeze(0).to(device)
+            
+            # Generate Grad-CAM
+            cam = generate_gradcam(model, img_tensor, target_layer, model_type)
+            if cam is None:
+                continue
+            
+            # Convert tensor to numpy for plotting
+            img_np = image.permute(1, 2, 0).cpu().numpy()
+            img_np = (img_np * [0.229, 0.224, 0.225] + [0.485, 0.456, 0.406]).clip(0, 1)
+            
+            # Plot original image
+            axes[successful_samples, 0].imshow(img_np)
+            axes[successful_samples, 0].set_title('Original Image')
+            axes[successful_samples, 0].axis('off')
+            
+            # Plot heatmap
+            axes[successful_samples, 1].imshow(cam, cmap='jet')
+            axes[successful_samples, 1].set_title('Grad-CAM Heatmap')
+            axes[successful_samples, 1].axis('off')
+            
+            # Plot overlay
+            heatmap = cv2.applyColorMap(np.uint8(255 * cam), cv2.COLORMAP_JET)
+            heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
+            overlay = (0.7 * img_np + 0.3 * heatmap/255).clip(0, 1)
+            
+            axes[successful_samples, 2].imshow(overlay)
+            axes[successful_samples, 2].set_title('Overlay')
+            axes[successful_samples, 2].axis('off')
+            
+            successful_samples += 1
+            
+        except Exception as e:
+            logger.error(f"Error processing sample {idx}: {str(e)}")
+            continue
+    
+    if successful_samples == 0:
+        logger.error("Failed to generate any Grad-CAM visualizations")
+        return
     
     plt.tight_layout()
     plt.savefig(Path(output_dir) / model_name / 'gradcam_visualization.png')
@@ -1155,7 +1028,7 @@ def plot_roc_curves(y_true: np.ndarray, y_score: np.ndarray,
     plt.close()
 
 def evaluate_model(model_type: str, model_name: Optional[str] = None):
-    """Evaluate a trained model with comprehensive visualizations."""
+    """Evaluate a trained model with comprehensive metrics."""
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # If no specific model name provided, use the latest version
@@ -1177,17 +1050,6 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None):
     print("\nAvailable processed datasets:")
     for i, d in enumerate(processed_dirs, 1):
         print(f"{i}. {d.name}")
-        # Try to load and display config info
-        config_file = d / "preprocessing_config.json"
-        if config_file.exists():
-            try:
-                with open(config_file) as f:
-                    config = json.load(f)
-                print(f"   - MTCNN: {config.get('use_mtcnn', 'N/A')}")
-                print(f"   - Face Margin: {config.get('face_margin', 'N/A')}")
-                print(f"   - Image Size: {config.get('final_size', 'N/A')}")
-            except:
-                pass
     
     while True:
         dataset_choice = input("\nEnter dataset number to use for evaluation: ")
@@ -1215,13 +1077,12 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None):
                            std=[0.229, 0.224, 0.225])
     ])
     
-    # Load test dataset based on model type
+    # Load test dataset
     if model_type == 'siamese':
         test_dataset = SiameseDataset(selected_data_dir / "test", transform=transform)
     else:
         test_dataset = datasets.ImageFolder(selected_data_dir / "test", transform=transform)
     
-    # Use simple DataLoader configuration to avoid multiprocessing issues
     test_loader = DataLoader(test_dataset, batch_size=32, num_workers=0, pin_memory=True)
     
     # Load model
@@ -1229,6 +1090,143 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None):
     model = get_model(model_type, num_classes).to(device)
     model.load_state_dict(torch.load(model_checkpoint_dir / 'best_model.pth'))
     model.eval()
+    
+    # Initialize metrics
+    all_predictions = []
+    all_targets = []
+    all_probs = []
+    total_loss = 0
+    criterion = get_criterion(model_type)
+    
+    # Measure inference time
+    inference_times = []
+    
+    # Evaluation loop
+    with torch.no_grad():
+        for batch in tqdm(test_loader, desc='Evaluating'):
+            if model_type == 'siamese':
+                img1, img2, labels = batch
+                img1, img2 = img1.to(device), img2.to(device)
+                
+                # Measure inference time
+                start_time = time.time()
+                out1, out2 = model(img1, img2)
+                dist = F.pairwise_distance(out1, out2)
+                pred = (dist < 0.5).float()
+                inference_times.append(time.time() - start_time)
+                
+                all_predictions.extend(pred.cpu().numpy())
+                all_targets.extend(labels.numpy())
+                all_probs.extend(dist.cpu().numpy()[:, None])
+            else:
+                images, labels = batch
+                images = images.to(device)
+                
+                # Measure inference time
+                start_time = time.time()
+                outputs = model(images)
+                inference_times.append(time.time() - start_time)
+                
+                loss = criterion(outputs, labels.to(device))
+                total_loss += loss.item()
+                
+                probs = F.softmax(outputs, dim=1)
+                _, predicted = torch.max(outputs, 1)
+                
+                all_predictions.extend(predicted.cpu().numpy())
+                all_targets.extend(labels.numpy())
+                all_probs.extend(probs.cpu().numpy())
+    
+    # Convert to numpy arrays
+    all_predictions = np.array(all_predictions)
+    all_targets = np.array(all_targets)
+    all_probs = np.array(all_probs)
+    
+    # Calculate metrics
+    accuracy = accuracy_score(all_targets, all_predictions)
+    precision = precision_score(all_targets, all_predictions, average='weighted')
+    recall = recall_score(all_targets, all_predictions, average='weighted')
+    f1 = f1_score(all_targets, all_predictions, average='weighted')
+    
+    # Calculate ROC AUC
+    if model_type == 'siamese':
+        fpr, tpr, _ = roc_curve(all_targets, -all_probs.ravel())
+        roc_auc = auc(fpr, tpr)
+    else:
+        roc_auc = roc_auc_score(all_targets, all_probs, multi_class='ovr')
+    
+    # Calculate PR AUC
+    if model_type == 'siamese':
+        precision_curve, recall_curve, _ = precision_recall_curve(all_targets, -all_probs.ravel())
+        pr_auc = auc(recall_curve, precision_curve)
+    else:
+        pr_auc = average_precision_score(all_targets, all_probs)
+    
+    # Calculate average inference time
+    avg_inference_time = np.mean(inference_times)
+    
+    # Print metrics
+    print("\nEvaluation Metrics:")
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"F1 Score: {f1:.4f}")
+    print(f"ROC AUC: {roc_auc:.4f}")
+    print(f"PR AUC: {pr_auc:.4f}")
+    print(f"Average Inference Time: {avg_inference_time*1000:.2f} ms")
+    if model_type != 'siamese':
+        print(f"Test Loss: {total_loss/len(test_loader):.4f}")
+    
+    # Generate visualizations
+    logger.info("Generating visualizations...")
+    
+    # Plot confusion matrix
+    cm = confusion_matrix(all_targets, all_predictions)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=test_dataset.classes,
+                yticklabels=test_dataset.classes)
+    plt.title('Confusion Matrix')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.tight_layout()
+    plt.savefig(model_viz_dir / 'confusion_matrix.png')
+    plt.close()
+    
+    # Plot ROC curve
+    plt.figure(figsize=(8, 6))
+    if model_type == 'siamese':
+        plt.plot(fpr, tpr, label=f'ROC curve (AUC = {roc_auc:.2f})')
+    else:
+        for i in range(len(test_dataset.classes)):
+            fpr, tpr, _ = roc_curve(all_targets == i, all_probs[:, i])
+            plt.plot(fpr, tpr, label=f'{test_dataset.classes[i]} (AUC = {auc(fpr, tpr):.2f})')
+    plt.plot([0, 1], [0, 1], 'k--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC Curves')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+    plt.savefig(model_viz_dir / 'roc_curves.png')
+    plt.close()
+    
+    # Plot Precision-Recall curve
+    plt.figure(figsize=(8, 6))
+    if model_type == 'siamese':
+        plt.plot(recall_curve, precision_curve, label=f'PR curve (AUC = {pr_auc:.2f})')
+    else:
+        for i in range(len(test_dataset.classes)):
+            precision_curve, recall_curve, _ = precision_recall_curve(all_targets == i, all_probs[:, i])
+            plt.plot(recall_curve, precision_curve, label=f'{test_dataset.classes[i]} (AUC = {auc(recall_curve, precision_curve):.2f})')
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title('Precision-Recall Curves')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.tight_layout()
+    plt.savefig(model_viz_dir / 'pr_curves.png')
+    plt.close()
     
     # Generate Grad-CAM visualizations
     logger.info("Generating Grad-CAM visualizations...")
@@ -1239,65 +1237,6 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None):
     logger.info("Generating t-SNE embeddings...")
     plot_tsne_embeddings(model, test_dataset, 
                         str(VISUALIZATIONS_DIR), model_name)
-    
-    # Evaluate model performance
-    logger.info("Evaluating model performance...")
-    y_true = []
-    y_pred = []
-    y_score = []
-    
-    with torch.no_grad():
-        for batch in tqdm(test_loader, desc='Evaluating'):
-            if model_type == 'siamese':
-                img1, img2, labels = batch
-                img1, img2 = img1.to(device), img2.to(device)
-                out1, out2 = model(img1, img2)
-                dist = F.pairwise_distance(out1, out2)
-                pred = (dist < 0.5).float()
-                y_true.extend(labels.numpy())
-                y_pred.extend(pred.cpu().numpy())
-                y_score.extend(dist.cpu().numpy()[:, None])  # Add dimension for consistency
-            else:
-                images, labels = batch
-                images = images.to(device)
-                outputs = model(images)
-                _, predicted = torch.max(outputs, 1)
-                probs = F.softmax(outputs, dim=1)
-                y_true.extend(labels.numpy())
-                y_pred.extend(predicted.cpu().numpy())
-                y_score.extend(probs.cpu().numpy())
-    
-    y_true = np.array(y_true)
-    y_pred = np.array(y_pred)
-    y_score = np.array(y_score)
-    
-    # Plot detailed confusion matrix and metrics
-    logger.info("Generating performance visualizations...")
-    if model_type != 'siamese':
-        plot_confusion_matrix(y_true, y_pred, test_dataset.classes,
-                            str(VISUALIZATIONS_DIR), model_name)
-        plot_roc_curves(y_true, y_score, test_dataset.classes,
-                        str(VISUALIZATIONS_DIR), model_name)
-    else:
-        # For Siamese network, plot simplified metrics
-        accuracy = (y_true == y_pred).mean()
-        logger.info(f"Siamese Network Accuracy: {accuracy:.2%}")
-        
-        # Plot ROC curve for verification
-        fpr, tpr, _ = roc_curve(y_true, -y_score.ravel())  # Negative because smaller distance = more similar
-        roc_auc = auc(fpr, tpr)
-        
-        plt.figure()
-        plt.plot(fpr, tpr, label=f'ROC curve (AUC = {roc_auc:.2f})')
-        plt.plot([0, 1], [0, 1], 'k--')
-        plt.xlim([0.0, 1.0])
-        plt.ylim([0.0, 1.05])
-        plt.xlabel('False Positive Rate')
-        plt.ylabel('True Positive Rate')
-        plt.title('ROC Curve for Face Verification')
-        plt.legend(loc="lower right")
-        plt.savefig(model_viz_dir / 'verification_roc.png')
-        plt.close()
     
     logger.info("Evaluation complete! Check the visualizations directory for results.")
 
@@ -1385,185 +1324,212 @@ def get_user_confirmation(prompt: str = "Continue? (y/n): ") -> bool:
         else:
             print("Please enter 'y' for yes or 'n' for no/back")
 
+def tune_hyperparameters(model_type: str, train_loader: DataLoader, val_loader: DataLoader,
+                        device: torch.device, n_trials: int = 50) -> Dict[str, Any]:
+    """Tune hyperparameters using Optuna."""
+    def objective(trial):
+        # Define hyperparameter search space
+        batch_size = trial.suggest_int('batch_size', 16, 128)
+        lr = trial.suggest_float('lr', 1e-5, 1e-2, log=True)
+        weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-3, log=True)
+        dropout_rate = trial.suggest_float('dropout_rate', 0.1, 0.7)
+        optimizer_name = trial.suggest_categorical('optimizer', ['adam', 'sgd'])
+        
+        # Initialize model
+        num_classes = len(train_loader.dataset.classes) if model_type != 'siamese' else 2
+        model = get_model(model_type, num_classes).to(device)
+        
+        # Set dropout rate based on model type
+        if model_type == 'baseline':
+            model.dropout.p = dropout_rate
+        elif model_type == 'cnn':
+            # For ResNet, we need to add dropout to the final layer
+            model.resnet.fc = nn.Sequential(
+                nn.Dropout(p=dropout_rate),
+                nn.Linear(model.resnet.fc.in_features, num_classes)
+            )
+        else:  # siamese
+            model.dropout.p = dropout_rate
+        
+        # Setup optimizer
+        if optimizer_name == 'sgd':
+            optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay)
+        else:
+            optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        
+        # Get criterion
+        criterion = get_criterion(model_type)
+        
+        # Train for a few epochs to evaluate
+        best_val_acc = 0
+        for epoch in range(5):  # Use fewer epochs for tuning
+            train_loss = train_epoch(model, train_loader, criterion, optimizer, device, model_type)
+            val_loss, val_acc = validate(model, val_loader, criterion, device, model_type)
+            
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+        
+        return best_val_acc
+    
+    # Create study
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=n_trials)
+    
+    # Return best parameters
+    return study.best_params
+
 def main():
     """Interactive interface for the face recognition system."""
-    # Check GPU availability at startup
-    device = check_gpu()
-    
     while True:
         print("\nFace Recognition System")
-        print("1. Process raw data")
-        print("2. Train new model")
-        print("3. Evaluate model")
-        print("4. Predict single image")
-        print("5. Check GPU Status")
-        print("6. List trained models")
-        print("7. List preprocessing configs")
-        print("8. Exit")
-        print("\nType 'b' or 'back' at any prompt to return to main menu")
+        print("1. Process Raw Data")
+        print("2. Train Model")
+        print("3. Evaluate Model")
+        print("4. List Processed Datasets")
+        print("5. List Trained Models")
+        print("6. Exit")
         
-        choice = input("\nEnter your choice (1-8): ")
+        choice = input("\nEnter your choice (1-6): ")
         
-        if choice.lower() in ['b', 'back']:
-            continue
+        if choice == '1':
+            print("\nData Processing")
+            if not get_user_confirmation("This will create a new preprocessed dataset. Continue? (y/n): "):
+                continue
+            
+            config = get_preprocessing_config()
+            if get_user_confirmation("Start processing? (y/n): "):
+                processed_dir = process_raw_data(config)
+                print(f"\nProcessed data saved in: {processed_dir}")
         
-        try:
-            if choice == '1':
-                print("\nData Processing")
-                if not get_user_confirmation("This will create a new preprocessed dataset. Continue? (y/n): "):
-                    continue
-                
-                # Get preprocessing configuration
-                config = get_preprocessing_config()
-                
-                # Get split ratios
-                train_ratio = input("Enter training data ratio (default 0.7): ") or "0.7"
-                if train_ratio.lower() in ['b', 'back']:
-                    continue
-                train_ratio = float(train_ratio)
-                
-                val_ratio = input("Enter validation data ratio (default 0.15): ") or "0.15"
-                if val_ratio.lower() in ['b', 'back']:
-                    continue
-                val_ratio = float(val_ratio)
-                
-                test_ratio = input("Enter test data ratio (default 0.15): ") or "0.15"
-                if test_ratio.lower() in ['b', 'back']:
-                    continue
-                test_ratio = float(test_ratio)
-                
-                if get_user_confirmation("Start processing? (y/n): "):
-                    processed_dir = process_raw_data(config, (train_ratio, val_ratio, test_ratio))
-                    print(f"\nProcessed data saved in: {processed_dir}")
-                
-            elif choice == '2':
-                print("\nModel Training")
-                model_type = input("Enter model type (baseline/cnn/siamese): ")
-                if model_type.lower() in ['b', 'back']:
-                    continue
-                
-                model_name = input("Enter model name (optional, press Enter for automatic versioning): ")
-                if model_name.lower() in ['b', 'back']:
-                    continue
-                if not model_name:
-                    model_name = None
-                
-                batch_size = input("Enter batch size (default 32): ") or "32"
-                if batch_size.lower() in ['b', 'back']:
-                    continue
-                batch_size = int(batch_size)
-                
-                epochs = input("Enter number of epochs (default 50): ") or "50"
-                if epochs.lower() in ['b', 'back']:
-                    continue
-                epochs = int(epochs)
-                
-                if get_user_confirmation("Start training? (y/n): "):
-                    trained_model_name = train_model(model_type, model_name, batch_size, epochs)
-                    print(f"\nModel trained and saved as: {trained_model_name}")
-                
-            elif choice == '3':
-                print("\nModel Evaluation")
-                model_type = input("Enter model type (baseline/cnn/siamese): ")
-                if model_type.lower() in ['b', 'back']:
-                    continue
-                
-                # List available models of this type
-                model_dirs = list(CHECKPOINTS_DIR.glob(f'{model_type}_*'))
-                if not model_dirs:
-                    print(f"No trained models found for type: {model_type}")
-                    continue
-                
-                print("\nAvailable models:")
-                for i, model_dir in enumerate(model_dirs, 1):
-                    print(f"{i}. {model_dir.name}")
-                
-                model_choice = input("\nEnter model number (or press Enter for latest): ")
-                if model_choice.lower() in ['b', 'back']:
-                    continue
-                
-                model_name = None if not model_choice else model_dirs[int(model_choice)-1].name
-                
-                if get_user_confirmation("Start evaluation? (y/n): "):
-                    evaluate_model(model_type, model_name)
-                
-            elif choice == '4':
-                print("\nSingle Image Prediction")
-                model_type = input("Enter model type (baseline/cnn/siamese): ")
-                if model_type.lower() in ['b', 'back']:
-                    continue
-                
-                # List available models of this type
-                model_dirs = list(CHECKPOINTS_DIR.glob(f'{model_type}_*'))
-                if not model_dirs:
-                    print(f"No trained models found for type: {model_type}")
-                    continue
-                
-                print("\nAvailable models:")
-                for i, model_dir in enumerate(model_dirs, 1):
-                    print(f"{i}. {model_dir.name}")
-                
-                model_choice = input("\nEnter model number (or press Enter for latest): ")
-                if model_choice.lower() in ['b', 'back']:
-                    continue
-                
-                model_name = None if not model_choice else model_dirs[int(model_choice)-1].name
-                
-                image_path = input("Enter image path: ")
-                if image_path.lower() in ['b', 'back']:
-                    continue
-                
-                if get_user_confirmation("Make prediction? (y/n): "):
-                    predicted_class, confidence = predict_image(model_type, image_path, model_name)
-                    print(f"\nPredicted class: {predicted_class}")
-                    print(f"Confidence: {confidence:.2%}")
-                
-            elif choice == '5':
-                print("\nChecking GPU Status...")
-                device = check_gpu()
-                input("\nPress Enter to continue...")
-                
-            elif choice == '6':
-                print("\nTrained Models:")
-                model_dirs = list(CHECKPOINTS_DIR.glob('*'))
-                if not model_dirs:
-                    print("No trained models found")
-                else:
-                    for model_dir in sorted(model_dirs):
-                        if model_dir.is_dir():
-                            print(f"- {model_dir.name}")
-                input("\nPress Enter to continue...")
-                
-            elif choice == '7':
-                print("\nPreprocessing Configurations:")
-                configs = list(PROCESSED_DATA_DIR.glob("*/preprocessing_config.json"))
-                if not configs:
-                    print("No preprocessing configurations found")
-                else:
-                    for config_path in configs:
-                        with open(config_path) as f:
+        elif choice == '2':
+            print("\nModel Training")
+            model_type = input("Enter model type (baseline/cnn/siamese): ")
+            if model_type.lower() not in ['baseline', 'cnn', 'siamese']:
+                print("Invalid model type")
+                continue
+            
+            # List available processed datasets
+            processed_dirs = [d for d in PROCESSED_DATA_DIR.iterdir() if d.is_dir() and (d / "train").exists()]
+            if not processed_dirs:
+                print("No processed datasets found. Please process raw data first.")
+                continue
+            
+            print("\nAvailable processed datasets:")
+            for i, d in enumerate(processed_dirs, 1):
+                print(f"{i}. {d.name}")
+                # Try to load and display config info
+                config_file = d / "preprocessing_config.json"
+                if config_file.exists():
+                    try:
+                        with open(config_file) as f:
                             config = json.load(f)
-                        print(f"\n- {config['name']}:")
-                        print(f"  MTCNN: {config['use_mtcnn']}")
-                        print(f"  Face Margin: {config['face_margin']}")
-                        print(f"  Image Size: {config['final_size']}")
-                        print(f"  Augmentation: {config['augmentation']}")
-                input("\nPress Enter to continue...")
-                
-            elif choice == '8':
-                if get_user_confirmation("Are you sure you want to exit? (y/n): "):
-                    print("\nExiting...")
+                        print(f"   - MTCNN: {config.get('use_mtcnn', 'N/A')}")
+                        print(f"   - Face Margin: {config.get('face_margin', 'N/A')}")
+                        print(f"   - Image Size: {config.get('final_size', 'N/A')}")
+                    except:
+                        pass
+            
+            while True:
+                dataset_choice = input("\nEnter dataset number to use for training: ")
+                try:
+                    dataset_idx = int(dataset_choice) - 1
+                    if 0 <= dataset_idx < len(processed_dirs):
+                        selected_data_dir = processed_dirs[dataset_idx]
+                        break
+                    else:
+                        print("Invalid choice. Please try again.")
+                except ValueError:
+                    print("Please enter a valid number.")
+            
+            model_name = input("Enter model name (optional, press Enter for automatic versioning): ")
+            if not model_name:
+                model_name = None
+            
+            epochs = int(input("Enter number of epochs (default 50): ") or "50")
+            batch_size = int(input("Enter batch size (default 32): ") or "32")
+            lr = float(input("Enter learning rate (default 0.001): ") or "0.001")
+            
+            if get_user_confirmation("Start training? (y/n): "):
+                trained_model_name = train_model(
+                    model_type, model_name, batch_size, epochs, lr=lr
+                )
+                print(f"\nModel trained and saved as: {trained_model_name}")
+        
+        elif choice == '3':
+            print("\nModel Evaluation")
+            model_type = input("Enter model type (baseline/cnn/siamese): ")
+            if model_type.lower() not in ['baseline', 'cnn', 'siamese']:
+                print("Invalid model type")
+                continue
+            
+            # List available models of this type
+            model_dirs = list(CHECKPOINTS_DIR.glob(f'{model_type}_*'))
+            if not model_dirs:
+                print(f"No trained models found for type: {model_type}")
+                continue
+            
+            print("\nAvailable models:")
+            for i, model_dir in enumerate(model_dirs, 1):
+                print(f"{i}. {model_dir.name}")
+            
+            while True:
+                model_choice = input("\nEnter model number (or press Enter for latest): ")
+                if not model_choice:
+                    model_name = None
                     break
-                
+                try:
+                    model_idx = int(model_choice) - 1
+                    if 0 <= model_idx < len(model_dirs):
+                        model_name = model_dirs[model_idx].name
+                        break
+                    else:
+                        print("Invalid choice. Please try again.")
+                except ValueError:
+                    print("Please enter a valid number.")
+            
+            try:
+                evaluate_model(model_type, model_name)
+            except Exception as e:
+                print(f"Error during evaluation: {str(e)}")
+        
+        elif choice == '4':
+            print("\nProcessed Datasets:")
+            processed_dirs = [d for d in PROCESSED_DATA_DIR.iterdir() if d.is_dir()]
+            if not processed_dirs:
+                print("No processed datasets found")
             else:
-                print("\nInvalid choice. Please try again.")
-                
-        except ValueError as e:
-            logger.error(f"Invalid input: {e}")
-            print("Returning to main menu...")
-        except Exception as e:
-            logger.error(f"An error occurred: {e}")
-            print("Returning to main menu...")
+                for d in processed_dirs:
+                    print(f"- {d.name}")
+                    # Try to load and display config info
+                    config_file = d / "preprocessing_config.json"
+                    if config_file.exists():
+                        try:
+                            with open(config_file) as f:
+                                config = json.load(f)
+                            print(f"   - MTCNN: {config.get('use_mtcnn', 'N/A')}")
+                            print(f"   - Face Margin: {config.get('face_margin', 'N/A')}")
+                            print(f"   - Image Size: {config.get('final_size', 'N/A')}")
+                        except:
+                            pass
+        
+        elif choice == '5':
+            print("\nTrained Models:")
+            model_dirs = list(CHECKPOINTS_DIR.glob('*'))
+            if not model_dirs:
+                print("No trained models found")
+            else:
+                for model_dir in sorted(model_dirs):
+                    if model_dir.is_dir():
+                        print(f"- {model_dir.name}")
+        
+        elif choice == '6':
+            print("\nGoodbye!")
+            break
+        
+        else:
+            print("Invalid choice. Please try again.")
+        
+        input("\nPress Enter to continue...")
 
 if __name__ == '__main__':
     main() 
