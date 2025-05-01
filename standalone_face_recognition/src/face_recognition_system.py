@@ -544,16 +544,6 @@ class ContrastiveLoss(nn.Module):
         return loss
 
 def get_model(model_type: str, num_classes: int = 18) -> nn.Module:
-    """
-    Get model instance based on type.
-    
-    Args:
-        model_type: One of 'baseline', 'cnn', or 'siamese'
-        num_classes: Number of celebrity classes
-        
-    Returns:
-        Model instance
-    """
     if model_type == 'baseline':
         return BaselineNet(num_classes=num_classes)
     elif model_type == 'cnn':
@@ -564,15 +554,6 @@ def get_model(model_type: str, num_classes: int = 18) -> nn.Module:
         raise ValueError(f"Invalid model type: {model_type}")
 
 def get_criterion(model_type: str) -> nn.Module:
-    """
-    Get loss function based on model type.
-    
-    Args:
-        model_type: One of 'baseline', 'cnn', or 'siamese'
-        
-    Returns:
-        Loss function
-    """
     if model_type in ['baseline', 'cnn']:
         return nn.CrossEntropyLoss()
     elif model_type == 'siamese':
@@ -1314,48 +1295,114 @@ def get_user_confirmation(prompt: str = "Continue? (y/n): ") -> bool:
         else:
             print("Please enter 'y' for yes or 'n' for no/back")
 
-def tune_hyperparameters(model_type: str, train_loader: DataLoader, val_loader: DataLoader,
-                        device: torch.device, n_trials: int = 50) -> Dict[str, Any]:
-    """Tune hyperparameters using Optuna."""
+def tune_hyperparameters(model_type: str, dataset_path: Path, n_trials: int = 50) -> Dict[str, Any]:
+    """Tune hyperparameters for a given model type using Optuna."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Starting hyperparameter tuning for {model_type} model")
+    
+    # Setup data transforms
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])
+    ])
+    
+    # Load datasets
+    if model_type == 'siamese':
+        train_dataset = SiameseDataset(dataset_path / "train", transform=transform)
+        val_dataset = SiameseDataset(dataset_path / "val", transform=transform)
+    else:
+        train_dataset = datasets.ImageFolder(dataset_path / "train", transform=transform)
+        val_dataset = datasets.ImageFolder(dataset_path / "val", transform=transform)
+    
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=32)
+    
     def objective(trial):
         # Define hyperparameter search space
-        batch_size = trial.suggest_int('batch_size', 16, 128)
-        lr = trial.suggest_float('lr', 1e-5, 1e-2, log=True)
-        weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-3, log=True)
-        dropout_rate = trial.suggest_float('dropout_rate', 0.1, 0.7)
-        optimizer_name = trial.suggest_categorical('optimizer', ['adam', 'sgd'])
+        if model_type == 'siamese':
+            params = {
+                'batch_size': trial.suggest_int('batch_size', 16, 128),
+                'lr': trial.suggest_float('lr', 1e-5, 1e-2, log=True),
+                'weight_decay': trial.suggest_float('weight_decay', 1e-5, 1e-3, log=True),
+                'margin': trial.suggest_float('margin', 1.0, 3.0)
+            }
+        else:
+            params = {
+                'batch_size': trial.suggest_int('batch_size', 16, 128),
+                'lr': trial.suggest_float('lr', 1e-5, 1e-2, log=True),
+                'weight_decay': trial.suggest_float('weight_decay', 1e-5, 1e-3, log=True),
+                'dropout_rate': trial.suggest_float('dropout_rate', 0.1, 0.7)
+            }
         
         # Initialize model
-        num_classes = len(train_loader.dataset.classes) if model_type != 'siamese' else 2
+        num_classes = len(train_dataset.classes) if model_type != 'siamese' else 2
         model = get_model(model_type, num_classes).to(device)
         
-        # Set dropout rate based on model type
-        if model_type == 'baseline':
-            model.dropout.p = dropout_rate
-        elif model_type == 'cnn':
-            # For ResNet, we need to add dropout to the final layer
-            model.resnet.fc = nn.Sequential(
-                nn.Dropout(p=dropout_rate),
-                nn.Linear(model.resnet.fc.in_features, num_classes)
-            )
-        else:  # siamese
-            model.dropout.p = dropout_rate
+        # Set dropout rate for baseline and CNN models
+        if model_type in ['baseline', 'cnn']:
+            if model_type == 'baseline':
+                model.dropout.p = params['dropout_rate']
+            else:  # CNN
+                model.resnet.fc = nn.Sequential(
+                    nn.Dropout(p=params['dropout_rate']),
+                    nn.Linear(model.resnet.fc.in_features, num_classes)
+                )
         
         # Setup optimizer
-        if optimizer_name == 'sgd':
-            optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay)
-        else:
-            optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-        
-        # Get criterion
+        optimizer = optim.Adam(model.parameters(), lr=params['lr'], weight_decay=params['weight_decay'])
         criterion = get_criterion(model_type)
+        if model_type == 'siamese':
+            criterion = ContrastiveLoss(margin=params['margin'])
         
         # Train for a few epochs to evaluate
         best_val_acc = 0
         for epoch in range(5):  # Use fewer epochs for tuning
-            train_loss = train_epoch(model, train_loader, criterion, optimizer, device, model_type)
-            val_loss, val_acc = validate(model, val_loader, criterion, device, model_type)
+            model.train()
+            train_loss = 0
+            for batch in train_loader:
+                if model_type == 'siamese':
+                    img1, img2, label = batch
+                    img1, img2 = img1.to(device), img2.to(device)
+                    label = label.to(device)
+                    optimizer.zero_grad()
+                    out1, out2 = model(img1, img2)
+                    loss = criterion(out1, out2, label)
+                else:
+                    data, target = batch
+                    data, target = data.to(device), target.to(device)
+                    optimizer.zero_grad()
+                    output = model(data)
+                    loss = criterion(output, target)
+                
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item()
             
+            # Validation
+            model.eval()
+            val_loss = 0
+            correct = 0
+            with torch.no_grad():
+                for batch in val_loader:
+                    if model_type == 'siamese':
+                        img1, img2, label = batch
+                        img1, img2 = img1.to(device), img2.to(device)
+                        label = label.to(device)
+                        out1, out2 = model(img1, img2)
+                        dist = F.pairwise_distance(out1, out2)
+                        pred = (dist < 0.5).float()
+                        correct += pred.eq(label).sum().item()
+                    else:
+                        data, target = batch
+                        data, target = data.to(device), target.to(device)
+                        output = model(data)
+                        val_loss += criterion(output, target).item()
+                        pred = output.argmax(dim=1, keepdim=True)
+                        correct += pred.eq(target.view_as(pred)).sum().item()
+            
+            val_acc = 100. * correct / len(val_dataset)
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
         
@@ -1365,8 +1412,31 @@ def tune_hyperparameters(model_type: str, train_loader: DataLoader, val_loader: 
     study = optuna.create_study(direction='maximize')
     study.optimize(objective, n_trials=n_trials)
     
-    # Return best parameters
-    return study.best_params
+    # Print results
+    print("\nHyperparameter Tuning Results:")
+    print(f"Best trial: {study.best_trial.number}")
+    print(f"Best validation accuracy: {study.best_trial.value:.2f}%")
+    print("\nBest hyperparameters:")
+    for key, value in study.best_trial.params.items():
+        print(f"{key}: {value}")
+    
+    # Plot optimization history
+    plt.figure(figsize=(10, 6))
+    optuna.visualization.matplotlib.plot_optimization_history(study)
+    plt.title('Optimization History')
+    plt.tight_layout()
+    plt.savefig(VISUALIZATIONS_DIR / f'{model_type}_tuning_history.png')
+    plt.close()
+    
+    # Plot parameter importance
+    plt.figure(figsize=(10, 6))
+    optuna.visualization.matplotlib.plot_param_importances(study)
+    plt.title('Parameter Importance')
+    plt.tight_layout()
+    plt.savefig(VISUALIZATIONS_DIR / f'{model_type}_param_importance.png')
+    plt.close()
+    
+    return study.best_trial.params
 
 def main():
     """Interactive interface for the face recognition system."""
@@ -1375,11 +1445,12 @@ def main():
         print("1. Process Raw Data")
         print("2. Train Model")
         print("3. Evaluate Model")
-        print("4. List Processed Datasets")
-        print("5. List Trained Models")
-        print("6. Exit")
+        print("4. Tune Hyperparameters")
+        print("5. List Processed Datasets")
+        print("6. List Trained Models")
+        print("7. Exit")
         
-        choice = input("\nEnter your choice (1-6): ")
+        choice = input("\nEnter your choice (1-7): ")
         
         if choice == '1':
             print("\nData Processing")
@@ -1483,6 +1554,51 @@ def main():
                 print(f"Error during evaluation: {str(e)}")
         
         elif choice == '4':
+            print("\nHyperparameter Tuning")
+            model_type = input("Enter model type (baseline/cnn/siamese): ")
+            if model_type.lower() not in ['baseline', 'cnn', 'siamese']:
+                print("Invalid model type")
+                continue
+            
+            # List available processed datasets
+            processed_dirs = [d for d in PROCESSED_DATA_DIR.iterdir() if d.is_dir() and (d / "train").exists()]
+            if not processed_dirs:
+                print("No processed datasets found. Please process raw data first.")
+                continue
+            
+            print("\nAvailable processed datasets:")
+            for i, d in enumerate(processed_dirs, 1):
+                print(f"{i}. {d.name}")
+            
+            while True:
+                dataset_choice = input("\nEnter dataset number to use for tuning: ")
+                try:
+                    dataset_idx = int(dataset_choice) - 1
+                    if 0 <= dataset_idx < len(processed_dirs):
+                        selected_data_dir = processed_dirs[dataset_idx]
+                        break
+                    else:
+                        print("Invalid choice. Please try again.")
+                except ValueError:
+                    print("Please enter a valid number.")
+            
+            n_trials = int(input("Enter number of trials (default 50): ") or "50")
+            
+            if get_user_confirmation("Start hyperparameter tuning? (y/n): "):
+                best_params = tune_hyperparameters(model_type, selected_data_dir, n_trials)
+                print("\nWould you like to train a model with these parameters?")
+                if get_user_confirmation("Train model with best parameters? (y/n): "):
+                    model_name = f"{model_type}_tuned"
+                    epochs = int(input("Enter number of epochs (default 50): ") or "50")
+                    trained_model_name = train_model(
+                        model_type, model_name, 
+                        batch_size=best_params['batch_size'],
+                        epochs=epochs,
+                        lr=best_params['lr']
+                    )
+                    print(f"\nModel trained and saved as: {trained_model_name}")
+        
+        elif choice == '5':
             print("\nProcessed Datasets:")
             processed_dirs = [d for d in PROCESSED_DATA_DIR.iterdir() if d.is_dir()]
             if not processed_dirs:
@@ -1502,7 +1618,7 @@ def main():
                         except:
                             pass
         
-        elif choice == '5':
+        elif choice == '6':
             print("\nTrained Models:")
             model_dirs = list(CHECKPOINTS_DIR.glob('*'))
             if not model_dirs:
@@ -1512,7 +1628,7 @@ def main():
                     if model_dir.is_dir():
                         print(f"- {model_dir.name}")
         
-        elif choice == '6':
+        elif choice == '7':
             print("\nGoodbye!")
             break
         
