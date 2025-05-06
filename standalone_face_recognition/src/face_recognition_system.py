@@ -90,7 +90,24 @@ class PreprocessingConfig:
     @classmethod
     def from_dict(cls, config_dict: Dict) -> 'PreprocessingConfig':
         """Create config from dictionary."""
-        return cls(**config_dict)
+        # Extract only the parameters needed for the constructor
+        constructor_params = {
+            'name': config_dict['name'],
+            'use_mtcnn': config_dict['use_mtcnn'],
+            'face_margin': config_dict['face_margin'],
+            'final_size': config_dict['final_size'],
+            'augmentation': config_dict['augmentation']
+        }
+        
+        # Create the config with constructor params
+        config = cls(**constructor_params)
+        
+        # Set any additional attributes that may have been added
+        for key, value in config_dict.items():
+            if key not in constructor_params:
+                setattr(config, key, value)
+                
+        return config
 
 def align_face(image: np.ndarray, landmarks: np.ndarray) -> np.ndarray:
     """Align face based on eye landmarks."""
@@ -343,7 +360,8 @@ def visualize_preprocessing_steps(image_path: str, config: PreprocessingConfig, 
         return None
 
 def process_raw_data(config: PreprocessingConfig,
-                    split_ratio: Tuple[float, float, float] = (0.7, 0.15, 0.15)):
+                    split_ratio: Tuple[float, float, float] = (0.7, 0.15, 0.15),
+                    test_mode: bool = False):
     """Process raw data with given preprocessing configuration."""
     logger.info(f"Processing raw data with config: {config.name}")
     
@@ -377,6 +395,10 @@ def process_raw_data(config: PreprocessingConfig,
             
         shuffle(image_files)
         
+        # In test mode, limit to 2 images per class
+        if test_mode:
+            image_files = image_files[:2]
+        
         # Calculate split sizes
         n_images = len(image_files)
         n_train = int(n_images * split_ratio[0])
@@ -402,7 +424,16 @@ def process_raw_data(config: PreprocessingConfig,
             split_class_dir = processed_base / split / class_name
             split_class_dir.mkdir(exist_ok=True)
             
-            for file in tqdm(files, desc=f"Processing {split}/{class_name}"):
+            # Use tqdm safely, handle cases where it might be mocked
+            try:
+                # Try using tqdm normally
+                files_iter = tqdm(files, desc=f"Processing {split}/{class_name}")
+            except Exception:
+                # If tqdm fails (e.g., during testing), fall back to normal iteration
+                logger.warning("Could not use tqdm, falling back to normal iteration")
+                files_iter = files
+            
+            for file in files_iter:
                 try:
                     processed_face = preprocess_image(str(file), config)
                     if processed_face is not None:
@@ -447,13 +478,33 @@ def get_preprocessing_config() -> PreprocessingConfig:
 
 class BaselineNet(nn.Module):
     """Baseline CNN model for face recognition."""
-    def __init__(self, num_classes: int = 18):
+    def __init__(self, num_classes: int = 18, input_size: Tuple[int, int] = (224, 224)):
         super().__init__()
         self.conv1 = nn.Conv2d(3, 32, 3)
         self.conv2 = nn.Conv2d(32, 64, 3)
         self.conv3 = nn.Conv2d(64, 128, 3)
         self.pool = nn.MaxPool2d(2, 2)
-        self.fc1 = nn.Linear(128 * 26 * 26, 512)
+        
+        # Calculate feature map size after convolutions and pooling
+        # Input -> Conv1 -> Pool -> Conv2 -> Pool -> Conv3 -> Pool
+        h, w = input_size
+        # Conv1: no padding, kernel size 3
+        h, w = h - 2, w - 2
+        # Pool: kernel size 2, stride 2
+        h, w = h // 2, w // 2
+        # Conv2: no padding, kernel size 3
+        h, w = h - 2, w - 2
+        # Pool: kernel size 2, stride 2
+        h, w = h // 2, w // 2
+        # Conv3: no padding, kernel size 3
+        h, w = h - 2, w - 2
+        # Pool: kernel size 2, stride 2
+        h, w = h // 2, w // 2
+        
+        # Calculate final feature size
+        self.features_size = 128 * h * w
+        
+        self.fc1 = nn.Linear(self.features_size, 512)
         self.fc2 = nn.Linear(512, num_classes)
         self.dropout = nn.Dropout(0.5)
 
@@ -461,7 +512,7 @@ class BaselineNet(nn.Module):
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
         x = self.pool(F.relu(self.conv3(x)))
-        x = x.view(-1, 128 * 26 * 26)
+        x = x.view(-1, self.features_size)
         x = F.relu(self.fc1(x))
         x = self.dropout(x)
         x = self.fc2(x)
@@ -471,7 +522,7 @@ class BaselineNet(nn.Module):
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
         x = self.pool(F.relu(self.conv3(x)))
-        x = x.view(-1, 128 * 26 * 26)
+        x = x.view(-1, self.features_size)
         x = F.relu(self.fc1(x))
         return x
 
@@ -479,7 +530,8 @@ class ResNetTransfer(nn.Module):
     """Transfer learning model based on ResNet-18."""
     def __init__(self, num_classes: int = 18):
         super().__init__()
-        self.resnet = models.resnet18(pretrained=True)
+        # Use weights parameter instead of pretrained to avoid deprecation warning
+        self.resnet = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
         num_features = self.resnet.fc.in_features
         self.resnet.fc = nn.Linear(num_features, num_classes)
 
@@ -543,9 +595,9 @@ class ContrastiveLoss(nn.Module):
                          label * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2))
         return loss
 
-def get_model(model_type: str, num_classes: int = 18) -> nn.Module:
+def get_model(model_type: str, num_classes: int = 18, input_size: Tuple[int, int] = (224, 224)) -> nn.Module:
     if model_type == 'baseline':
-        return BaselineNet(num_classes=num_classes)
+        return BaselineNet(num_classes=num_classes, input_size=input_size)
     elif model_type == 'cnn':
         return ResNetTransfer(num_classes=num_classes)
     elif model_type == 'siamese':

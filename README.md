@@ -19,6 +19,9 @@ standalone_face_recognition/
 ├── src/
 │   ├── face_recognition_system.py  # Training pipeline
 │   └── app.py          # Live webcam demo
+├── tests/              # Test suite for the system
+│   └── test_face_recognition_system.py
+├── run_tests.py        # Script to run all tests
 └── face_references/    # Storage for recognized faces in the live demo
 ```
 
@@ -61,12 +64,19 @@ Run the Streamlit app:
 streamlit run src/app.py
 ```
 
-The live demo provides:
-- Real-time face detection and recognition
-- Ability to add new faces to the recognition database
-- Adjustable recognition threshold
-- Multiple face tracking and labeling
-- Persistent storage of recognized faces
+### Running Tests
+To run the automated test suite:
+```bash
+python run_tests.py
+```
+
+The system includes comprehensive tests for:
+- Model creation and forward passes with different input sizes
+- Preprocessing with various configurations
+- Data processing pipeline
+- Training and evaluation (requires GPU)
+
+The test suite uses a small synthetic dataset to ensure fast execution.
 
 ## Features
 
@@ -106,6 +116,7 @@ The live demo provides:
 
 1. **Baseline (baseline)**
    - Simple CNN architecture
+   - Dynamically adjusts to different input image sizes
    - Good for initial experiments
 
 2. **CNN Transfer Learning (cnn)**
@@ -167,4 +178,5 @@ The system provides comprehensive evaluation metrics:
 - Models can be resumed from checkpoints
 - Visualizations are automatically generated and saved
 - Comprehensive error handling and logging
-- Live demo supports multiple face tracking and recognition 
+- Live demo supports multiple face tracking and recognition
+- The baseline model now supports variable input sizes for increased flexibility 
