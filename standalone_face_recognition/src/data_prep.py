@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, Optional, List, Tuple, Union, Any
 from tqdm import tqdm
 
-from .base_config import PROJECT_ROOT, RAW_DATA_DIR, PROCESSED_DATA_DIR, VISUALIZATIONS_DIR, logger, get_user_confirmation
+from .base_config import PROJECT_ROOT, RAW_DATA_DIR, PROC_DATA_DIR, VIZ_DIR, logger, get_user_confirmation
 
 class PreprocessingConfig:
     """Configuration for preprocessing pipeline."""
@@ -324,7 +324,7 @@ def process_raw_data(config: PreprocessingConfig,
     logger.info(f"Processing raw data with config: {config.name}")
     
     # Create preprocessing-specific directories
-    processed_base = PROCESSED_DATA_DIR / config.name
+    processed_base = PROC_DATA_DIR / config.name
     for split in ["train", "val", "test"]:
         split_dir = processed_base / split
         if split_dir.exists():

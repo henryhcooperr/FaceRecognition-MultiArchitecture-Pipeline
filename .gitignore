@@ -26,12 +26,20 @@ ENV/
 env/
 .env
 
-# IDE
+# My IDE settings - I switch between editors sometimes
 .idea/
 .vscode/
+.vscode-insiders/
+.atom/
+*.sublime-project
+*.sublime-workspace
+*~
 *.swp
 *.swo
 .DS_Store
+.history/
+.ipynb_checkpoints/
+.vim/
 
 # Project specific
 outputs/
@@ -50,6 +58,18 @@ models/
 *.mp4
 *.avi
 *.mov
+
+# Personal files & notes
+.scratch/
+notes.txt
+TODO.md
+my_ideas.md
+*.bak
+*.tmp
+scratch/
+.my_experiments/
+.profile.json
+.myconfig.ini
 
 # Keep certain directories but ignore their contents
 standalone_face_recognition/data/raw/.gitkeep

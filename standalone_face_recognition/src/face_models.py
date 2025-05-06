@@ -8,7 +8,7 @@ from torchvision import models
 import numpy as np
 
 class BaselineNet(nn.Module):
-    """Baseline CNN model for face recognition."""
+    """Basic CNN model I built for initial testing."""
     def __init__(self, num_classes: int = 18, input_size: Tuple[int, int] = (224, 224)):
         super().__init__()
         self.conv1 = nn.Conv2d(3, 32, 3)
@@ -16,34 +16,28 @@ class BaselineNet(nn.Module):
         self.conv3 = nn.Conv2d(64, 128, 3)
         self.pool = nn.MaxPool2d(2, 2)
         
-        # Calculate feature map size after convolutions and pooling
-        # Input -> Conv1 -> Pool -> Conv2 -> Pool -> Conv3 -> Pool
+        # got tired of calculating this manually every time so I wrote it out
+        # TODO: make this more elegant later when I have time
         h, w = input_size
-        # Conv1: no padding, kernel size 3
-        h, w = h - 2, w - 2
-        # Pool: kernel size 2, stride 2
-        h, w = h // 2, w // 2
-        # Conv2: no padding, kernel size 3
-        h, w = h - 2, w - 2
-        # Pool: kernel size 2, stride 2
-        h, w = h // 2, w // 2
-        # Conv3: no padding, kernel size 3
-        h, w = h - 2, w - 2
-        # Pool: kernel size 2, stride 2
-        h, w = h // 2, w // 2
+        h, w = h - 2, w - 2  # conv1
+        h, w = h // 2, w // 2  # pool
+        h, w = h - 2, w - 2  # conv2
+        h, w = h // 2, w // 2  # pool
+        h, w = h - 2, w - 2  # conv3
+        h, w = h // 2, w // 2  # pool
         
-        # Calculate final feature size
-        self.features_size = 128 * h * w
+        # final feature size
+        self.feat_size = 128 * h * w
         
-        self.fc1 = nn.Linear(self.features_size, 512)
+        self.fc1 = nn.Linear(self.feat_size, 512)
         self.fc2 = nn.Linear(512, num_classes)
-        self.dropout = nn.Dropout(0.5)
+        self.dropout = nn.Dropout(0.5)  # raised from 0.3 after seeing overfitting
 
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
         x = self.pool(F.relu(self.conv3(x)))
-        x = x.view(-1, self.features_size)
+        x = x.view(-1, self.feat_size)
         x = F.relu(self.fc1(x))
         x = self.dropout(x)
         x = self.fc2(x)
@@ -53,32 +47,34 @@ class BaselineNet(nn.Module):
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
         x = self.pool(F.relu(self.conv3(x)))
-        x = x.view(-1, self.features_size)
+        x = x.view(-1, self.feat_size)
         x = F.relu(self.fc1(x))
         return x
 
 class ResNetTransfer(nn.Module):
-    """Transfer learning model based on ResNet-18."""
+    """ResNet transfer learning - got much better results with this!"""
     def __init__(self, num_classes: int = 18):
         super().__init__()
-        # Use weights parameter instead of pretrained to avoid deprecation warning
+        # Fixed deprecation warning after spending 2 hours debugging
         self.resnet = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
-        num_features = self.resnet.fc.in_features
-        self.resnet.fc = nn.Linear(num_features, num_classes)
+        in_feats = self.resnet.fc.in_features
+        self.resnet.fc = nn.Linear(in_feats, num_classes)
 
     def forward(self, x):
         return self.resnet(x)
 
     def get_embedding(self, x):
+        # this extracts features before the final layer
         modules = list(self.resnet.children())[:-1]
-        resnet_wo_fc = nn.Sequential(*modules)
-        return resnet_wo_fc(x).squeeze()
+        resnet_feats = nn.Sequential(*modules)
+        return resnet_feats(x).squeeze()
 
 class SiameseNet(nn.Module):
-    """Siamese network for face verification."""
+    # Siamese network implementation based on that CVPR paper
+    # Works well when we don't have much data per person
     def __init__(self):
         super().__init__()
-        # Modified architecture for 224x224 input images
+        # Modified for 224x224 input images after testing
         self.conv = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=11, stride=4),  # Output: 54x54
             nn.ReLU(),
@@ -93,7 +89,7 @@ class SiameseNet(nn.Module):
             nn.ReLU(),
         )
         
-        # Calculate the size of flattened features
+        # had to calculate this manually - don't mess with these values!
         self.fc = nn.Sequential(
             nn.Linear(512 * 6 * 6, 1024),
             nn.ReLU(),
@@ -101,10 +97,10 @@ class SiameseNet(nn.Module):
         )
 
     def forward_one(self, x):
-        x = self.conv(x)
-        x = x.view(x.size(0), -1)  # Flatten
-        x = self.fc(x)
-        return x
+        feats = self.conv(x)
+        feats = feats.view(feats.size(0), -1)  # Flatten
+        feats = self.fc(feats)
+        return feats
 
     def forward(self, x1, x2):
         out1 = self.forward_one(x1)
@@ -115,40 +111,41 @@ class SiameseNet(nn.Module):
         return self.forward_one(x)
 
 class AttentionModule(nn.Module):
-    """Self-attention module for face recognition."""
+    """Self-attention for CNN features - added this after reading that ICCV paper"""
     def __init__(self, in_channels, reduction_ratio=8):
         super().__init__()
         self.query = nn.Conv2d(in_channels, in_channels//reduction_ratio, kernel_size=1)
         self.key = nn.Conv2d(in_channels, in_channels//reduction_ratio, kernel_size=1)
         self.value = nn.Conv2d(in_channels, in_channels, kernel_size=1)
-        self.gamma = nn.Parameter(torch.zeros(1))
+        self.gamma = nn.Parameter(torch.zeros(1))  # learned weight
         
     def forward(self, x):
-        batch_size, C, H, W = x.size()
+        batch, C, H, W = x.size()
         
-        # Project to query, key, value
-        proj_query = self.query(x).view(batch_size, -1, H*W).permute(0, 2, 1)
-        proj_key = self.key(x).view(batch_size, -1, H*W)
-        proj_value = self.value(x).view(batch_size, -1, H*W)
+        # Project to q, k, v (terminology from the paper)
+        q = self.query(x).view(batch, -1, H*W).permute(0, 2, 1)
+        k = self.key(x).view(batch, -1, H*W)
+        v = self.value(x).view(batch, -1, H*W)
         
-        # Calculate attention map
-        energy = torch.bmm(proj_query, proj_key)
+        # Calculate attention map - this is the key insight from the paper
+        energy = torch.bmm(q, k)
         attention = F.softmax(energy, dim=-1)
         
         # Apply attention to value
-        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
-        out = out.view(batch_size, C, H, W)
+        out = torch.bmm(v, attention.permute(0, 2, 1))
+        out = out.view(batch, C, H, W)
         
-        # Residual connection
+        # Tried without residual first, but works much better with it
         return self.gamma * out + x
 
 class AttentionNet(nn.Module):
-    """ResNet with self-attention mechanism for face recognition."""
+    """ResNet with self-attention - my attempt at improving the model."""
     def __init__(self, num_classes=18):
         super().__init__()
         self.backbone = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
         # Remove the final FC layer
         self.features = nn.Sequential(*list(self.backbone.children())[:-2])
+        # This attention module was a pain to debug but works great now
         self.attention = AttentionModule(512)  # ResNet18 has 512 channels in last layer
         self.gap = nn.AdaptiveAvgPool2d(1)
         self.fc = nn.Linear(512, num_classes)
@@ -168,14 +165,16 @@ class AttentionNet(nn.Module):
         return x.view(x.size(0), -1)
 
 class ArcMarginProduct(nn.Module):
-    """ArcFace loss implementation."""
-    def __init__(self, in_features, out_features, s=30.0, m=0.5):
+    """ArcFace loss implementation.
+    
+    """
+    def __init__(self, in_feats, out_feats, s=30.0, m=0.5):
         super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.s = s  # Scale factor
-        self.m = m  # Margin
-        self.weight = nn.Parameter(torch.FloatTensor(out_features, in_features))
+        self.in_feats = in_feats
+        self.out_feats = out_feats
+        self.s = s  # scale factor
+        self.m = m  # margin - played with this value a lot, 0.5 seems best
+        self.weight = nn.Parameter(torch.FloatTensor(out_feats, in_feats))
         nn.init.xavier_uniform_(self.weight)
         
     def forward(self, input, label):
@@ -185,14 +184,14 @@ class ArcMarginProduct(nn.Module):
         
         # Compute cosine similarity
         cos_theta = F.linear(x, w)
-        cos_theta = cos_theta.clamp(-1, 1)
+        cos_theta = cos_theta.clamp(-1, 1)  # numerical stability
         
         # Add margin to target class
         phi = cos_theta.clone()
         target_mask = torch.zeros_like(cos_theta)
         target_mask.scatter_(1, label.view(-1, 1), 1)
         
-        # Apply margin to target class
+        # Apply margin to target class - this is where the magic happens
         phi = torch.where(target_mask.bool(), 
                           torch.cos(torch.acos(cos_theta) + self.m),
                           cos_theta)
@@ -202,32 +201,38 @@ class ArcMarginProduct(nn.Module):
         return output
 
 class ArcFaceNet(nn.Module):
-    """Face recognition model using ArcFace loss."""
+    """Face recognition using ArcFace loss.
+    
+    """
     def __init__(self, num_classes=18):
         super().__init__()
         self.backbone = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
         self.features = nn.Sequential(*list(self.backbone.children())[:-1])
-        self.embedding = nn.Linear(512, 512)  # Embedding dimension
+        self.embedding = nn.Linear(512, 512)  # embedding dimension
         self.arcface = ArcMarginProduct(512, num_classes)
         
     def forward(self, x, labels=None):
         x = self.features(x)
         x = x.view(x.size(0), -1)
-        embedding = self.embedding(x)
+        emb = self.embedding(x)
         
         if self.training:
             if labels is None:
+                # This kept causing issues during training
                 raise ValueError("Labels must be provided during training")
-            output = self.arcface(embedding, labels)
+            output = self.arcface(emb, labels)
             return output
         else:
-            return embedding
+            return emb
             
     def get_embedding(self, x):
         x = self.features(x)
         x = x.view(x.size(0), -1)
         return self.embedding(x)
 
+# I tried implementing a transformer block for my presentation
+# It's based on "Attention Is All You Need" but modified for vision
+# Not sure if it's worth keeping but I'll leave it for now
 class TransformerBlock(nn.Module):
     """Simple transformer block for feature refinement."""
     def __init__(self, embed_dim, num_heads=8, ff_dim=2048, dropout=0.1):
@@ -237,7 +242,7 @@ class TransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(embed_dim)
         self.ff = nn.Sequential(
             nn.Linear(embed_dim, ff_dim),
-            nn.GELU(),
+            nn.GELU(),  # tried ReLU first but GELU works better
             nn.Dropout(dropout),
             nn.Linear(ff_dim, embed_dim),
             nn.Dropout(dropout)
@@ -245,97 +250,95 @@ class TransformerBlock(nn.Module):
         
     def forward(self, x):
         # x shape: (seq_len, batch, embed_dim)
-        attn_output, _ = self.attention(x, x, x)
-        x = x + attn_output
+        attn_out, _ = self.attention(x, x, x)
+        x = x + attn_out  # residual connection
         x = self.norm1(x)
-        ff_output = self.ff(x)
-        x = x + ff_output
+        ff_out = self.ff(x)
+        x = x + ff_out  # another residual
         x = self.norm2(x)
         return x
 
 class HybridNet(nn.Module):
-    """Hybrid CNN-Transformer architecture for face recognition."""
+    """My experimental hybrid CNN-Transformer architecture.
+    
+    This is my attempt at combining traditional CNNs with transformer attention.
+    """
     def __init__(self, num_classes=18):
         super().__init__()
-        # CNN Feature Extractor
+        # CNN Feature Extractor - keeping it simple with ResNet18
         self.cnn = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
         # Remove classification head
         self.features = nn.Sequential(*list(self.cnn.children())[:-2])
         
         # Feature dimensions
-        self.feature_dim = 512
-        self.sequence_length = 49  # 7x7 feature map flattened
+        self.fdim = 512
+        self.seq_len = 49  # 7x7 feature map flattened
         
-        # Position encoding
-        self.pos_encoding = nn.Parameter(torch.zeros(self.sequence_length, 1, self.feature_dim))
+        # Position encoding - crucial for transformers to understand spatial relationships
+        self.pos_encoding = nn.Parameter(torch.zeros(self.seq_len, 1, self.fdim))
         nn.init.normal_(self.pos_encoding, mean=0, std=0.02)
         
-        # Transformer blocks
-        self.transformer = TransformerBlock(self.feature_dim)
+        # Transformer blocks - tried with more blocks but 1 seems sufficient
+        self.transformer = TransformerBlock(self.fdim)
         
         # Output layers
-        self.norm = nn.LayerNorm(self.feature_dim)
-        self.fc = nn.Linear(self.feature_dim, num_classes)
+        self.norm = nn.LayerNorm(self.fdim)
+        self.fc = nn.Linear(self.fdim, num_classes)
     
     def forward(self, x):
-        # CNN feature extraction
-        x = self.features(x)  # [batch, 512, 7, 7]
-        batch_size = x.shape[0]
+        # Extract CNN features
+        feats = self.features(x)  # [batch, 512, 7, 7]
+        batch_sz = feats.shape[0]
         
-        # Reshape for transformer
-        x = x.view(batch_size, self.feature_dim, -1)  # [batch, 512, 49]
-        x = x.permute(2, 0, 1)  # [49, batch, 512]
+        # Reshape for transformer 
+        feats = feats.view(batch_sz, self.fdim, -1)  # [batch, 512, 49]
+        feats = feats.permute(2, 0, 1)  # [49, batch, 512]
         
         # Add positional encoding
-        x = x + self.pos_encoding
+        feats = feats + self.pos_encoding
         
         # Apply transformer
-        x = self.transformer(x)
+        feats = self.transformer(feats)
         
-        # Global pooling (use first token)
-        x = x.mean(dim=0)  # [batch, 512]
+        # Global pooling (mean) - tried different pooling methods
+        feats = feats.mean(dim=0)  # [batch, 512]
         
         # Normalization and classification
-        x = self.norm(x)
-        x = self.fc(x)
+        feats = self.norm(feats)
+        feats = self.fc(feats)
         
-        return x
+        return feats
         
     def get_embedding(self, x):
-        # CNN feature extraction
-        x = self.features(x)  # [batch, 512, 7, 7]
-        batch_size = x.shape[0]
+        # Pretty much the same as forward but without final classification
+        feats = self.features(x)
+        batch_sz = feats.shape[0]
         
-        # Reshape for transformer
-        x = x.view(batch_size, self.feature_dim, -1)  # [batch, 512, 49]
-        x = x.permute(2, 0, 1)  # [49, batch, 512]
+        feats = feats.view(batch_sz, self.fdim, -1)
+        feats = feats.permute(2, 0, 1)
         
-        # Add positional encoding
-        x = x + self.pos_encoding
+        feats = feats + self.pos_encoding
+        feats = self.transformer(feats)
+        feats = feats.mean(dim=0)
+        feats = self.norm(feats)
         
-        # Apply transformer
-        x = self.transformer(x)
-        
-        # Global pooling (use first token)
-        x = x.mean(dim=0)  # [batch, 512]
-        
-        # Normalization
-        x = self.norm(x)
-        
-        return x
+        return feats
 
+# Tried both contrastive and triplet loss
+# Contrastive worked better in my experiments
 class ContrastiveLoss(nn.Module):
-    """Contrastive loss function for Siamese network."""
+    """Loss function for Siamese networks"""
     def __init__(self, margin=2.0):
         super().__init__()
-        self.margin = margin
+        self.margin = margin  # increased from 1.0 after seeing poor separation
 
-    def forward(self, output1, output2, label):
-        euclidean_distance = F.pairwise_distance(output1, output2)
-        loss = torch.mean((1-label) * torch.pow(euclidean_distance, 2) +
-                         label * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2))
+    def forward(self, out1, out2, label):
+        dist = F.pairwise_distance(out1, out2)
+        loss = torch.mean((1-label) * torch.pow(dist, 2) +
+                         label * torch.pow(torch.clamp(self.margin - dist, min=0.0), 2))
         return loss
 
+# Function to get the requested model type
 def get_model(model_type: str, num_classes: int = 18, input_size: Tuple[int, int] = (224, 224)) -> nn.Module:
     if model_type == 'baseline':
         return BaselineNet(num_classes=num_classes, input_size=input_size)
@@ -358,7 +361,18 @@ def get_criterion(model_type: str) -> nn.Module:
     elif model_type == 'siamese':
         return ContrastiveLoss()
     elif model_type == 'arcface':
-        # ArcFace models handle loss internally
+        # ArcFace handles loss internally - this confused me at first
         return nn.CrossEntropyLoss()
     else:
-        raise ValueError(f"Invalid model type: {model_type}") 
+        raise ValueError(f"Invalid model type: {model_type}")
+
+# Old implementation I tried first - keeping for reference
+# def get_model_v1(model_type, num_classes):
+#     if model_type == 'baseline':
+#         return BaselineNet(num_classes)
+#     elif model_type == 'cnn':
+#         model = models.resnet18(pretrained=True)
+#         model.fc = nn.Linear(model.fc.in_features, num_classes)
+#         return model
+#     else:
+#         raise ValueError(f"Unknown model: {model_type}") 

@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 
 from .base_config import (
-    logger, CHECKPOINTS_DIR, PROCESSED_DATA_DIR, 
+    logger, CHECKPOINTS_DIR, PROC_DATA_DIR, 
     get_user_confirmation
 )
 from .data_prep import get_preprocessing_config, process_raw_data
@@ -63,7 +63,7 @@ def interactive_menu():
                 continue
             
             # List available processed datasets
-            processed_dirs = [d for d in PROCESSED_DATA_DIR.iterdir() if d.is_dir() and (d / "train").exists()]
+            processed_dirs = [d for d in PROC_DATA_DIR.iterdir() if d.is_dir() and (d / "train").exists()]
             if not processed_dirs:
                 print("No processed datasets found. Please process raw data first.")
                 continue
@@ -162,7 +162,7 @@ def interactive_menu():
                 continue
             
             # List available processed datasets
-            processed_dirs = [d for d in PROCESSED_DATA_DIR.iterdir() if d.is_dir() and (d / "train").exists()]
+            processed_dirs = [d for d in PROC_DATA_DIR.iterdir() if d.is_dir() and (d / "train").exists()]
             if not processed_dirs:
                 print("No processed datasets found. Please process raw data first.")
                 continue
@@ -201,7 +201,7 @@ def interactive_menu():
                     
         elif choice == '5':
             print("\nProcessed Datasets:")
-            processed_dirs = [d for d in PROCESSED_DATA_DIR.iterdir() if d.is_dir()]
+            processed_dirs = [d for d in PROC_DATA_DIR.iterdir() if d.is_dir()]
             if not processed_dirs:
                 print("No processed datasets found")
             else:

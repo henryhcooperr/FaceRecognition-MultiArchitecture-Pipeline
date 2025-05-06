@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, Optional, List, Tuple, Union, Any
 from sklearn.manifold import TSNE
 
-from .base_config import OUTPUTS_DIR, VISUALIZATIONS_DIR, logger
+from .base_config import OUT_DIR, VIZ_DIR, logger
 
 def plot_tsne_embeddings(model: torch.nn.Module, dataset, 
                         output_dir: str, model_name: str):
@@ -276,7 +276,7 @@ def plot_learning_curves(train_losses: List[float], val_losses: List[float],
 def visualize_batch_augmentations(dataset, num_samples: int = 5, output_dir: str = None):
     """Visualize augmentations for a batch of samples."""
     if output_dir is None:
-        output_dir = VISUALIZATIONS_DIR / 'augmentations'
+        output_dir = VIZ_DIR / 'augmentations'
         output_dir.mkdir(parents=True, exist_ok=True)
     
     # Create figure for visualization

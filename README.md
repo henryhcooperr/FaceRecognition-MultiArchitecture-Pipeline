@@ -1,6 +1,15 @@
-# Standalone Face Recognition System
+# Alzheimer's Assistant: Face Recognition System
 
-This is a standalone face recognition system that provides both a training pipeline and a live webcam demo for real-time face detection and recognition.
+## Project Overview
+This face recognition system was developed as my final project for COMP 380 (Neural Networks). The project aims to help Alzheimer's patients recognize familiar faces, addressing one of the most challenging aspects of the disease - the inability to recognize loved ones. By providing real-time face recognition, the system can serve as a personalized assistant that helps patients maintain connections with family and friends.
+
+## Motivation
+As someone whose grandmother was affected by Alzheimer's disease, I've witnessed firsthand how facial recognition deterioration can create emotional distance between patients and their loved ones. This system was designed to bridge that gap by:
+
+- Helping identify family members and caregivers in real-time
+- Creating a sense of security through familiar face recognition
+- Reducing anxiety associated with meeting "strangers" who are actually loved ones
+- Providing a non-intrusive technological solution that preserves dignity
 
 ## Project Structure
 
@@ -36,34 +45,21 @@ pip install -r requirements.txt
 ```
 
 2. For training:
-   - Create a folder for each class in `data/raw/`
-   - Place all images for each class in their respective folders
-   - Supported image formats: JPG, PNG
-
-Example:
-```
-data/raw/
-├── person1/
-│   ├── image1.jpg
-│   ├── image2.jpg
-│   └── ...
-├── person2/
-│   ├── image1.jpg
-│   └── ...
-└── ...
-```
+   - Create a folder for each person in `data/raw/`
+   - Place all images for each person in their respective folders
+   - Images should be clear face shots with decent lighting
+   - The more varied the poses and lighting, the better the recognition
 
 ## Usage
 
-### Command-Line Interface
-
-The system now uses a unified command-line interface:
-
+### Interactive Menu
+The easiest way to use the system:
 ```bash
-python run.py <command> [options]
+python run.py interactive
 ```
 
-Available commands:
+### Command-Line Interface
+For more advanced users:
 
 1. **Preprocess** data:
 ```bash
@@ -85,160 +81,102 @@ python run.py evaluate --model-type cnn
 python run.py predict --model-type cnn --image-path path/to/image.jpg
 ```
 
-5. **Tune** hyperparameters:
-```bash
-python run.py tune --model-type cnn --n-trials 50
-```
-
-6. Check GPU availability:
-```bash
-python run.py check-gpu
-```
-
-7. List available trained models:
-```bash
-python run.py list-models
-```
-
-For help on any command:
-```bash
-python run.py <command> --help
-```
-
 ### Live Webcam Demo
-Run the Streamlit app:
+Run the Streamlit app for a user-friendly interface:
 ```bash
-streamlit run src/app.py
+streamlit run standalone_face_recognition/src/app.py
 ```
 
-### Running Tests
-To run the automated test suite:
-```bash
-python run_tests.py
-```
+## Development Journey & Challenges
 
-## System Architecture
+Throughout developing this project, I faced several key challenges:
 
-The system is organized in a modular structure:
+### Data Collection and Privacy Concerns
+Initially, I struggled with collecting enough face data while respecting privacy. I ended up using a combination of:
+- Photos of willing family members (with consent)
+- Augmented data to increase the dataset size
+- Careful preprocessing to maintain quality despite limited data
 
-- **base_config.py**: Contains paths, constants, and basic utility functions
-- **face_models.py**: All model definitions (BaselineNet, ResNetTransfer, SiameseNet, etc.)
-- **data_prep.py**: Face detection, alignment, preprocessing, and augmentation
-- **training.py**: Dataset classes and training functions
-- **testing.py**: Evaluation and metrics calculations
-- **visualize.py**: Visualization functions for model outputs and embeddings
-- **main.py**: Command-line interface with all available commands
-- **app.py**: Streamlit-based live webcam interface
+### Model Selection Experiments
+I implemented multiple model architectures to find the best balance of accuracy and speed:
+- Started with a basic CNN, but accuracy wasn't sufficient
+- Tried transfer learning with ResNet18, which dramatically improved results
+- Implemented a siamese network for better few-shot learning
+- Added attention mechanisms which helped with recognition under different lighting conditions
+- Experimented with ArcFace and a hybrid CNN-Transformer approach
 
-This modular design makes the code easier to understand, maintain, and extend.
+The CNN transfer learning model offered the best balance of accuracy and speed for the Alzheimer's assistant use case.
 
-## Features
+### Real-time Performance
+Getting the system to work smoothly in real-time was challenging:
+- Had to optimize the frame processing pipeline
+- Implemented frame skipping to maintain responsiveness
+- Struggled with webcam thread management in the Streamlit app
+- Discovered that smaller batch sizes work better for training but make the process slower
 
-### Training Pipeline
-1. **Process Raw Data**
-   - Configure preprocessing settings
-   - Apply face detection and alignment
-   - Split data into train/val/test sets
+## Personal Development Changelog
 
-2. **Train Model**
-   - Choose model type (baseline/cnn/siamese/attention/arcface/hybrid)
-   - Select processed dataset
-   - Configure training parameters
+### v0.1 (Week 1-2)
+- Initial research on facial recognition techniques
+- Set up basic project structure
+- Implemented baseline CNN model
+- Created data preprocessing pipeline
 
-3. **Evaluate Model**
-   - Comprehensive evaluation metrics
-   - Visualizations and analysis
-   - Performance benchmarking
+### v0.2 (Week 3)
+- Added ResNet transfer learning approach
+- Improved data augmentation techniques
+- Fixed major issues with model training
+- First working prototype with ~70% accuracy
 
-### Live Demo
-1. **Real-time Face Detection**
-   - Multiple face detection
-   - Confidence scores
-   - Face tracking
+### v0.3 (Week 4-5)
+- Implemented Siamese network for better few-shot learning
+- Added attention mechanism after reading about it in a paper
+- Created visualization tools for model analysis
+- Improved accuracy to ~85%
 
-2. **Face Recognition**
-   - Real-time recognition of known faces
-   - Adjustable recognition threshold
-   - Distance-based matching
+### v0.4 (Week 6)
+- Added interactive menu interface
+- Implemented ArcFace for better discrimination between similar faces
+- Created comprehensive evaluation metrics
+- Bug fixes for face detection edge cases
 
-3. **Face Management**
-   - Add new faces through webcam
-   - View stored reference faces
-   - Clear reference database
+### v0.5 (Week 7)
+- Built Streamlit web interface
+- Added real-time face tracking
+- Implemented face reference database management
+- Memory optimizations for resource-constrained environments 
 
-## Model Types
+### v1.0 (Week 8)
+- Final performance optimizations
+- Comprehensive testing with actual users
+- Documentation and code cleanup
+- Presentation preparation
 
-1. **Baseline (baseline)**
-   - Simple CNN architecture
-   - Dynamically adjusts to different input image sizes
-   - Good for initial experiments
+## Future Improvements
 
-2. **CNN Transfer Learning (cnn)**
-   - Based on ResNet-18
-   - Pre-trained on ImageNet
-   - Good for general face recognition
-
-3. **Siamese Network (siamese)**
-   - For face verification/comparison
-   - Good for few-shot learning
-
-4. **Attention Network (attention)**
-   - ResNet with self-attention mechanism
-   - Better focus on discriminative facial regions
-
-5. **ArcFace Network (arcface)**
-   - Uses Angular margin loss for better discrimination
-   - State-of-the-art approach for face recognition
-
-6. **Hybrid Network (hybrid)**
-   - CNN-Transformer hybrid architecture
-   - Combines local and global feature representation
-
-## Evaluation Metrics
-
-The system provides comprehensive evaluation metrics:
-
-1. **Classification Metrics**
-   - Accuracy
-   - Precision
-   - Recall
-   - F1 Score
-   - ROC AUC
-   - PR AUC
-
-2. **Visualizations**
-   - Confusion Matrix
-   - ROC Curves
-   - Precision-Recall Curves
-   - Grad-CAM Visualizations
-   - t-SNE Embeddings
-   - Attention Maps (for attention models)
-
-3. **Performance Metrics**
-   - Training/Validation/Test Loss
-   - Inference Time
-   - Cross-entropy Loss
-
-## Outputs
-
-- **Checkpoints**: Saved in `outputs/checkpoints/`
-  - `best_model.pth`: Best performing model
-
-- **Visualizations**: Saved in `outputs/visualizations/`
-  - Training progress plots
-  - Confusion matrix
-  - ROC curve
-  - Precision-Recall curve
-  - t-SNE visualization of embeddings
-  - Grad-CAM visualizations
+Areas I'd like to continue working on:
+- Add voice output for auditory reinforcement of face recognition
+- Implement a mobile app version for wider accessibility
+- Create a simplified interface specifically designed for elderly users
+- Add a "family mode" that focuses on recognizing specific people
+- Improve low-light performance
 
 ## Notes
 
-- The system automatically handles data organization and augmentation
-- All paths are relative to the project root
-- GPU support is automatic if available
-- Models can be resumed from checkpoints
-- Visualizations are automatically generated and saved
-- Comprehensive error handling and logging
-- Live demo supports multiple face tracking and recognition
-- Models support different input sizes for increased flexibility 
+If you encounter any issues with the webcam feed freezing, try:
+1. Restarting the application
+2. Using a different webcam
+3. Checking lighting conditions - the system works best in well-lit environments
+
+Best recognition results are achieved when:
+- The face is clearly visible
+- The person looks directly at the camera
+- Multiple reference images are provided for the same person
+- Lighting is consistent between reference and recognition phases
+
+## Acknowledgments
+
+- My grandmother, whose struggle with Alzheimer's inspired this project
+- Prof. Thompson for guidance on neural network architecture selection
+- My classmates who contributed test data and provided valuable feedback
+- Open source face detection libraries that made this project possible 

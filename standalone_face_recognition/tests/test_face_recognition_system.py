@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import from our new modular structure
 from src.base_config import (
-    PROCESSED_DATA_DIR, RAW_DATA_DIR, CHECKPOINTS_DIR, OUTPUTS_DIR, logger
+    PROC_DATA_DIR, RAW_DATA_DIR, CHECKPOINTS_DIR, OUT_DIR, logger
 )
 from src.face_models import (
     BaselineNet, ResNetTransfer, SiameseNet, 
@@ -75,35 +75,35 @@ class TestFaceRecognitionSystem(unittest.TestCase):
         
         # Store original directories
         cls.original_raw_dir = RAW_DATA_DIR
-        cls.original_processed_dir = PROCESSED_DATA_DIR
+        cls.original_processed_dir = PROC_DATA_DIR
         cls.original_checkpoints_dir = CHECKPOINTS_DIR
-        cls.original_outputs_dir = OUTPUTS_DIR
+        cls.original_outputs_dir = OUT_DIR
         
         # Replace with test directories in each module
         from src import base_config, data_prep, training, testing
         
         # Update base_config module and all dependent modules
         base_config.RAW_DATA_DIR = cls.test_raw_dir
-        base_config.PROCESSED_DATA_DIR = cls.temp_dir / "processed"
+        base_config.PROC_DATA_DIR = cls.temp_dir / "processed"
         base_config.CHECKPOINTS_DIR = cls.temp_dir / "checkpoints"
-        base_config.OUTPUTS_DIR = cls.temp_dir / "outputs"
+        base_config.OUT_DIR = cls.temp_dir / "outputs"
         
         # Update references in dependent modules
         data_prep.RAW_DATA_DIR = base_config.RAW_DATA_DIR
-        data_prep.PROCESSED_DATA_DIR = base_config.PROCESSED_DATA_DIR
+        data_prep.PROC_DATA_DIR = base_config.PROC_DATA_DIR
         
-        training.PROCESSED_DATA_DIR = base_config.PROCESSED_DATA_DIR
+        training.PROC_DATA_DIR = base_config.PROC_DATA_DIR
         training.CHECKPOINTS_DIR = base_config.CHECKPOINTS_DIR
         
-        testing.PROCESSED_DATA_DIR = base_config.PROCESSED_DATA_DIR
+        testing.PROC_DATA_DIR = base_config.PROC_DATA_DIR
         testing.CHECKPOINTS_DIR = base_config.CHECKPOINTS_DIR
-        testing.VISUALIZATIONS_DIR = base_config.OUTPUTS_DIR / "visualizations"
+        testing.VIZ_DIR = base_config.OUT_DIR / "visualizations"
         
         # Ensure directories exist
-        base_config.PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        base_config.PROC_DATA_DIR.mkdir(parents=True, exist_ok=True)
         base_config.CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
-        base_config.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-        testing.VISUALIZATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        base_config.OUT_DIR.mkdir(parents=True, exist_ok=True)
+        testing.VIZ_DIR.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -113,20 +113,20 @@ class TestFaceRecognitionSystem(unittest.TestCase):
         
         # Restore in base_config
         base_config.RAW_DATA_DIR = cls.original_raw_dir
-        base_config.PROCESSED_DATA_DIR = cls.original_processed_dir
+        base_config.PROC_DATA_DIR = cls.original_processed_dir
         base_config.CHECKPOINTS_DIR = cls.original_checkpoints_dir
-        base_config.OUTPUTS_DIR = cls.original_outputs_dir
+        base_config.OUT_DIR = cls.original_outputs_dir
         
         # Restore in dependent modules
         data_prep.RAW_DATA_DIR = base_config.RAW_DATA_DIR
-        data_prep.PROCESSED_DATA_DIR = base_config.PROCESSED_DATA_DIR
+        data_prep.PROC_DATA_DIR = base_config.PROC_DATA_DIR
         
-        training.PROCESSED_DATA_DIR = base_config.PROCESSED_DATA_DIR
+        training.PROC_DATA_DIR = base_config.PROC_DATA_DIR
         training.CHECKPOINTS_DIR = base_config.CHECKPOINTS_DIR
         
-        testing.PROCESSED_DATA_DIR = base_config.PROCESSED_DATA_DIR
+        testing.PROC_DATA_DIR = base_config.PROC_DATA_DIR
         testing.CHECKPOINTS_DIR = base_config.CHECKPOINTS_DIR
-        testing.VISUALIZATIONS_DIR = base_config.OUTPUTS_DIR / "visualizations"
+        testing.VIZ_DIR = base_config.OUT_DIR / "visualizations"
         
         # Clean up temp directory
         shutil.rmtree(cls.temp_dir)
@@ -256,9 +256,9 @@ class TestFaceRecognitionSystem(unittest.TestCase):
             self.skipTest("Skipping test_train_and_evaluate as it requires GPU")
         
         # First process the data if not already done
-        from src.base_config import PROCESSED_DATA_DIR
+        from src.base_config import PROC_DATA_DIR
         
-        if not (PROCESSED_DATA_DIR / "test_processed").exists():
+        if not (PROC_DATA_DIR / "test_processed").exists():
             config = PreprocessingConfig(
                 name="test_processed",
                 use_mtcnn=False,  # Skip MTCNN for faster testing
@@ -504,9 +504,9 @@ class FaceRecognitionModelTests(unittest.TestCase):
             # Test embedding function
             embedding = model.get_embedding(self.dummy_input)
             self.assertEqual(embedding.shape, (self.batch_size, 512))
-            
+        
         # Test ArcMarginProduct separately
-        arc_margin = ArcMarginProduct(in_features=512, out_features=self.num_classes).to(self.device)
+        arc_margin = ArcMarginProduct(in_feats=512, out_feats=self.num_classes).to(self.device)
         dummy_features = torch.randn(self.batch_size, 512).to(self.device)
         arc_output = arc_margin(dummy_features, self.dummy_labels)
         self.assertEqual(arc_output.shape, (self.batch_size, self.num_classes))
@@ -633,8 +633,8 @@ class ArcFaceSpecificTests(unittest.TestCase):
         
         for m in margins:
             arc_margin = ArcMarginProduct(
-                in_features=self.feature_dim, 
-                out_features=self.num_classes,
+                in_feats=self.feature_dim, 
+                out_feats=self.num_classes,
                 m=m
             ).to(self.device)
             
@@ -648,8 +648,8 @@ class ArcFaceSpecificTests(unittest.TestCase):
         
         for s in scales:
             arc_margin = ArcMarginProduct(
-                in_features=self.feature_dim, 
-                out_features=self.num_classes,
+                in_feats=self.feature_dim, 
+                out_feats=self.num_classes,
                 s=s
             ).to(self.device)
             
@@ -804,9 +804,9 @@ class HybridModelSpecificTests(unittest.TestCase):
         model = HybridNet(num_classes=self.num_classes).to(self.device)
         
         # Check position encoding shape
-        self.assertEqual(model.pos_encoding.shape[0], model.sequence_length)
+        self.assertEqual(model.pos_encoding.shape[0], model.seq_len)
         self.assertEqual(model.pos_encoding.shape[1], 1)
-        self.assertEqual(model.pos_encoding.shape[2], model.feature_dim)
+        self.assertEqual(model.pos_encoding.shape[2], model.fdim)
         
         # Test forward pass
         with torch.no_grad():

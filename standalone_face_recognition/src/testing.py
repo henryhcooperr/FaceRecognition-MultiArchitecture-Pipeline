@@ -18,7 +18,7 @@ from torchvision import datasets, transforms
 from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_curve, precision_score, recall_score, f1_score, accuracy_score, roc_auc_score, average_precision_score
 from tqdm import tqdm
 
-from .base_config import PROCESSED_DATA_DIR, CHECKPOINTS_DIR, VISUALIZATIONS_DIR, logger
+from .base_config import PROC_DATA_DIR, CHECKPOINTS_DIR, VIZ_DIR, logger
 from .face_models import get_model
 from .training import SiameseDataset
 
@@ -38,7 +38,7 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None):
         raise ValueError(f"Model not found: {model_name}")
     
     # List available processed datasets
-    processed_dirs = [d for d in PROCESSED_DATA_DIR.iterdir() if d.is_dir() and (d / "test").exists()]
+    processed_dirs = [d for d in PROC_DATA_DIR.iterdir() if d.is_dir() and (d / "test").exists()]
     if not processed_dirs:
         raise ValueError("No processed datasets found with test data.")
     
@@ -61,7 +61,7 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None):
     logger.info(f"Using dataset: {selected_data_dir.name}")
     
     # Create model-specific visualization directory
-    model_viz_dir = VISUALIZATIONS_DIR / model_name
+    model_viz_dir = VIZ_DIR / model_name
     model_viz_dir.mkdir(parents=True, exist_ok=True)
     
     # Setup data transforms
@@ -496,7 +496,7 @@ def predict_image(model_type: str, image_path: str, model_name: Optional[str] = 
         raise ValueError(f"Model not found: {model_name}")
     
     # Find a processed dataset to get class names
-    processed_dirs = [d for d in PROCESSED_DATA_DIR.iterdir() if d.is_dir() and (d / "train").exists()]
+    processed_dirs = [d for d in PROC_DATA_DIR.iterdir() if d.is_dir() and (d / "train").exists()]
     if not processed_dirs:
         raise ValueError("No processed datasets found.")
     

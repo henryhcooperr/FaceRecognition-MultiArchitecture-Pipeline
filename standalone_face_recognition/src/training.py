@@ -18,7 +18,7 @@ from ray.tune.schedulers import ASHAScheduler
 from ray.tune.search.optuna import OptunaSearch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from .base_config import PROCESSED_DATA_DIR, CHECKPOINTS_DIR, logger
+from .base_config import PROC_DATA_DIR, CHECKPOINTS_DIR, logger
 from .face_models import get_model, get_criterion
 
 class SiameseDataset(Dataset):
@@ -85,7 +85,7 @@ def train_model(model_type: str, model_name: Optional[str] = None,
     logger.info(f"Using device: {device}")
     
     # List available processed datasets
-    processed_dirs = [d for d in PROCESSED_DATA_DIR.iterdir() if d.is_dir() and (d / "train").exists()]
+    processed_dirs = [d for d in PROC_DATA_DIR.iterdir() if d.is_dir() and (d / "train").exists()]
     if not processed_dirs:
         raise ValueError("No processed datasets found. Please process raw data first.")
     
