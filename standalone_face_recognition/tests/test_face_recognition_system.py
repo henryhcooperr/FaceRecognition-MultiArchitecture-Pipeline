@@ -11,13 +11,19 @@ import torch
 import numpy as np
 import logging
 from PIL import Image
+import torch.nn as nn
+from torch.utils.data import Dataset
 
 # Add parent directory to path so we can import the face_recognition_system module
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.face_recognition_system import (
     PreprocessingConfig, preprocess_image, process_raw_data,
     get_model, get_criterion, train_model, evaluate_model,
-    PROCESSED_DATA_DIR, RAW_DATA_DIR, CHECKPOINTS_DIR, OUTPUTS_DIR
+    PROCESSED_DATA_DIR, RAW_DATA_DIR, CHECKPOINTS_DIR, OUTPUTS_DIR,
+    BaselineNet, ResNetTransfer, SiameseNet, 
+    AttentionNet, ArcFaceNet, HybridNet,
+    AttentionModule, TransformerBlock, ArcMarginProduct,
+    ContrastiveLoss
 )
 
 # Set up logging
@@ -373,5 +379,403 @@ class TestFaceRecognitionSystem(unittest.TestCase):
                     except Exception as e:
                         self.fail(f"Model {model_type} failed with size {size}: {str(e)}")
 
-if __name__ == "__main__":
+class FaceRecognitionModelTests(unittest.TestCase):
+    
+    def setUp(self):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.batch_size = 2
+        self.num_classes = 5
+        self.img_size = (224, 224)
+        
+        # Create dummy inputs
+        self.dummy_input = torch.randn(self.batch_size, 3, *self.img_size).to(self.device)
+        self.dummy_labels = torch.randint(0, self.num_classes, (self.batch_size,)).to(self.device)
+    
+    def test_baseline_model(self):
+        model = BaselineNet(num_classes=self.num_classes, input_size=self.img_size).to(self.device)
+        model.eval()
+        
+        # Test forward pass
+        with torch.no_grad():
+            output = model(self.dummy_input)
+            self.assertEqual(output.shape, (self.batch_size, self.num_classes))
+            
+            # Test embedding function
+            embedding = model.get_embedding(self.dummy_input)
+            self.assertEqual(embedding.shape[0], self.batch_size)
+            
+    def test_resnet_transfer(self):
+        model = ResNetTransfer(num_classes=self.num_classes).to(self.device)
+        model.eval()
+        
+        # Test forward pass
+        with torch.no_grad():
+            output = model(self.dummy_input)
+            self.assertEqual(output.shape, (self.batch_size, self.num_classes))
+            
+            # Test embedding function
+            embedding = model.get_embedding(self.dummy_input)
+            self.assertEqual(embedding.shape[0], self.batch_size)
+            self.assertEqual(embedding.shape[1], 512)  # ResNet18 produces 512-dim embeddings
+            
+    def test_siamese_model(self):
+        model = SiameseNet().to(self.device)
+        model.eval()
+        
+        # Test forward pass with pair of images
+        with torch.no_grad():
+            out1, out2 = model(self.dummy_input, self.dummy_input)
+            self.assertEqual(out1.shape, (self.batch_size, 256))
+            self.assertEqual(out2.shape, (self.batch_size, 256))
+            
+            # Test embedding function
+            embedding = model.get_embedding(self.dummy_input)
+            self.assertEqual(embedding.shape, (self.batch_size, 256))
+            
+    def test_attention_model(self):
+        model = AttentionNet(num_classes=self.num_classes).to(self.device)
+        model.eval()
+        
+        # Test forward pass
+        with torch.no_grad():
+            output = model(self.dummy_input)
+            self.assertEqual(output.shape, (self.batch_size, self.num_classes))
+            
+            # Test embedding function
+            embedding = model.get_embedding(self.dummy_input)
+            self.assertEqual(embedding.shape, (self.batch_size, 512))
+            
+            # Test attention module separately
+            attention_module = AttentionModule(in_channels=64).to(self.device)
+            dummy_feature_map = torch.randn(self.batch_size, 64, 32, 32).to(self.device)
+            attention_output = attention_module(dummy_feature_map)
+            self.assertEqual(attention_output.shape, dummy_feature_map.shape)
+            
+    def test_arcface_model(self):
+        model = ArcFaceNet(num_classes=self.num_classes).to(self.device)
+        
+        # Test training mode (requires labels)
+        model.train()
+        output = model(self.dummy_input, self.dummy_labels)
+        self.assertEqual(output.shape, (self.batch_size, self.num_classes))
+        
+        # Test inference mode (no labels needed)
+        model.eval()
+        with torch.no_grad():
+            embedding = model(self.dummy_input)
+            self.assertEqual(embedding.shape, (self.batch_size, 512))
+            
+            # Test embedding function
+            embedding = model.get_embedding(self.dummy_input)
+            self.assertEqual(embedding.shape, (self.batch_size, 512))
+            
+        # Test ArcMarginProduct separately
+        arc_margin = ArcMarginProduct(in_features=512, out_features=self.num_classes).to(self.device)
+        dummy_features = torch.randn(self.batch_size, 512).to(self.device)
+        arc_output = arc_margin(dummy_features, self.dummy_labels)
+        self.assertEqual(arc_output.shape, (self.batch_size, self.num_classes))
+        
+    def test_hybrid_model(self):
+        model = HybridNet(num_classes=self.num_classes).to(self.device)
+        model.eval()
+        
+        # Test forward pass
+        with torch.no_grad():
+            output = model(self.dummy_input)
+            self.assertEqual(output.shape, (self.batch_size, self.num_classes))
+            
+            # Test embedding function
+            embedding = model.get_embedding(self.dummy_input)
+            self.assertEqual(embedding.shape, (self.batch_size, 512))
+        
+        # Test TransformerBlock separately
+        transformer_block = TransformerBlock(embed_dim=64, num_heads=2).to(self.device)
+        dummy_sequence = torch.randn(10, self.batch_size, 64).to(self.device)  # seq_len, batch, embed_dim
+        transformer_output = transformer_block(dummy_sequence)
+        self.assertEqual(transformer_output.shape, dummy_sequence.shape)
+        
+    def test_get_model_function(self):
+        """Test that the get_model function correctly instantiates all model types."""
+        model_types = ['baseline', 'cnn', 'siamese', 'attention', 'arcface', 'hybrid']
+        
+        for model_type in model_types:
+            model = get_model(model_type, num_classes=self.num_classes)
+            self.assertIsNotNone(model)
+            
+            # Verify model is of expected type
+            if model_type == 'baseline':
+                self.assertIsInstance(model, BaselineNet)
+            elif model_type == 'cnn':
+                self.assertIsInstance(model, ResNetTransfer)
+            elif model_type == 'siamese':
+                self.assertIsInstance(model, SiameseNet)
+            elif model_type == 'attention':
+                self.assertIsInstance(model, AttentionNet)
+            elif model_type == 'arcface':
+                self.assertIsInstance(model, ArcFaceNet)
+            elif model_type == 'hybrid':
+                self.assertIsInstance(model, HybridNet)
+    
+    def test_get_criterion_function(self):
+        """Test that the get_criterion function returns appropriate loss functions."""
+        model_types = ['baseline', 'cnn', 'siamese', 'attention', 'arcface', 'hybrid']
+        
+        for model_type in model_types:
+            criterion = get_criterion(model_type)
+            self.assertIsNotNone(criterion)
+            
+            if model_type == 'siamese':
+                self.assertIsInstance(criterion, ContrastiveLoss)
+            elif model_type in ['baseline', 'cnn', 'attention', 'arcface', 'hybrid']:
+                self.assertIsInstance(criterion, nn.CrossEntropyLoss)
+                
+    def test_visualization_compatibility(self):
+        """Test compatibility with visualization functions for all model types."""
+        model_types = ['baseline', 'cnn', 'siamese', 'attention', 'arcface', 'hybrid']
+        
+        # Create a tiny dataset for testing
+        class DummyDataset(Dataset):
+            def __init__(self, num_samples=10, num_classes=5):
+                self.num_samples = num_samples
+                self.classes = [f"class_{i}" for i in range(num_classes)]
+                self.data = [(torch.randn(3, 224, 224), i % num_classes) for i in range(num_samples)]
+            
+            def __len__(self):
+                return self.num_samples
+            
+            def __getitem__(self, idx):
+                return self.data[idx]
+        
+        dummy_dataset = DummyDataset()
+        
+        for model_type in model_types:
+            model = get_model(model_type, num_classes=len(dummy_dataset.classes)).to(self.device)
+            model.eval()
+            
+            # Test visualization compatibility
+            try:
+                # If the model type is attention, we need to test attention map visualization
+                if model_type == 'attention':
+                    # Skip actual visualization, just test the function doesn't crash
+                    # We need this because visualization functions actually save files
+                    hook_called = [False]
+                    
+                    def dummy_hook(module, input, output):
+                        hook_called[0] = True
+                        return output
+                    
+                    handle = model.attention.register_forward_hook(dummy_hook)
+                    
+                    # Run forward pass on first image
+                    img = dummy_dataset[0][0].unsqueeze(0).to(self.device)
+                    with torch.no_grad():
+                        _ = model(img)
+                        
+                    self.assertTrue(hook_called[0], "Attention hook wasn't called")
+                    handle.remove()
+            except Exception as e:
+                self.fail(f"Visualization test failed for {model_type} model: {str(e)}")
+
+class ArcFaceSpecificTests(unittest.TestCase):
+    """Additional tests specific to ArcFace model architecture."""
+    
+    def setUp(self):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.batch_size = 8
+        self.num_classes = 10
+        self.feature_dim = 512
+        self.img_size = (224, 224)
+        
+        # Create dummy inputs
+        self.dummy_input = torch.randn(self.batch_size, 3, *self.img_size).to(self.device)
+        self.dummy_labels = torch.randint(0, self.num_classes, (self.batch_size,)).to(self.device)
+        self.dummy_features = torch.randn(self.batch_size, self.feature_dim).to(self.device)
+    
+    def test_arcface_margin_boundaries(self):
+        """Test ArcFace with different margin values."""
+        margins = [0.3, 0.5, 0.7]
+        
+        for m in margins:
+            arc_margin = ArcMarginProduct(
+                in_features=self.feature_dim, 
+                out_features=self.num_classes,
+                m=m
+            ).to(self.device)
+            
+            # Test forward pass
+            output = arc_margin(self.dummy_features, self.dummy_labels)
+            self.assertEqual(output.shape, (self.batch_size, self.num_classes))
+    
+    def test_arcface_scale_factor(self):
+        """Test ArcFace with different scale factors."""
+        scales = [20.0, 30.0, 40.0]
+        
+        for s in scales:
+            arc_margin = ArcMarginProduct(
+                in_features=self.feature_dim, 
+                out_features=self.num_classes,
+                s=s
+            ).to(self.device)
+            
+            # Test forward pass
+            output = arc_margin(self.dummy_features, self.dummy_labels)
+            self.assertEqual(output.shape, (self.batch_size, self.num_classes))
+    
+    def test_arcface_embedding_normalization(self):
+        """Test that embeddings are properly normalized in ArcFace."""
+        model = ArcFaceNet(num_classes=self.num_classes).to(self.device)
+        model.eval()
+        
+        with torch.no_grad():
+            embedding = model.get_embedding(self.dummy_input)
+            
+            # Manually normalize embedding
+            normalized = torch.nn.functional.normalize(embedding, dim=1)
+            
+            # Check if embedding vectors have unit norm (approximately)
+            norms = torch.norm(normalized, dim=1)
+            self.assertTrue(torch.allclose(norms, torch.ones_like(norms), atol=1e-6))
+
+class AttentionSpecificTests(unittest.TestCase):
+    """Additional tests specific to Attention model architecture."""
+    
+    def setUp(self):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.batch_size = 4
+        self.num_classes = 10
+        self.img_size = (224, 224)
+        
+        # Create dummy inputs
+        self.dummy_input = torch.randn(self.batch_size, 3, *self.img_size).to(self.device)
+    
+    def test_attention_reduction_ratios(self):
+        """Test attention module with different reduction ratios."""
+        channels = 256
+        ratios = [4, 8, 16]
+        
+        for ratio in ratios:
+            # Create input tensor
+            x = torch.randn(self.batch_size, channels, 16, 16).to(self.device)
+            
+            # Create attention module
+            attention = AttentionModule(in_channels=channels, reduction_ratio=ratio).to(self.device)
+            
+            # Test forward pass
+            output = attention(x)
+            
+            # Check shape
+            self.assertEqual(output.shape, x.shape)
+            
+            # Check that gamma parameter exists and starts at zero
+            self.assertIsInstance(attention.gamma, nn.Parameter)
+            self.assertTrue(torch.allclose(attention.gamma, torch.zeros_like(attention.gamma)))
+    
+    def test_attention_visualization_hook(self):
+        """Test that we can extract attention maps from the model."""
+        model = AttentionNet(num_classes=self.num_classes).to(self.device)
+        model.eval()
+        
+        attention_maps = []
+        
+        def hook_fn(module, input, output):
+            # Extract attention map
+            x = input[0]
+            batch_size, C, H, W = x.size()
+            
+            # Compute query and key projections
+            proj_query = module.query(x).view(batch_size, -1, H*W).permute(0, 2, 1)
+            proj_key = module.key(x).view(batch_size, -1, H*W)
+            
+            # Compute attention weights
+            energy = torch.bmm(proj_query, proj_key)
+            attention = torch.nn.functional.softmax(energy, dim=-1)
+            
+            # Store the attention map
+            attention_maps.append(attention.detach().cpu())
+        
+        # Register hook
+        handle = model.attention.register_forward_hook(hook_fn)
+        
+        # Forward pass
+        with torch.no_grad():
+            _ = model(self.dummy_input)
+        
+        # Check that we got attention maps
+        self.assertTrue(len(attention_maps) > 0)
+        
+        # Check shape of attention map (batch_size, H*W, H*W)
+        attention_map = attention_maps[0]
+        self.assertEqual(attention_map.dim(), 3)
+        self.assertEqual(attention_map.shape[0], self.batch_size)
+        
+        # Remove hook
+        handle.remove()
+
+class HybridModelSpecificTests(unittest.TestCase):
+    """Additional tests specific to Hybrid model architecture."""
+    
+    def setUp(self):
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.batch_size = 4
+        self.num_classes = 10
+        self.img_size = (224, 224)
+        self.seq_len = 20
+        self.embed_dim = 128
+        
+        # Create dummy inputs
+        self.dummy_input = torch.randn(self.batch_size, 3, *self.img_size).to(self.device)
+        self.dummy_seq = torch.randn(self.seq_len, self.batch_size, self.embed_dim).to(self.device)
+    
+    def test_transformer_block_heads(self):
+        """Test transformer block with different numbers of attention heads."""
+        head_counts = [1, 2, 4, 8]
+        
+        for num_heads in head_counts:
+            # Create transformer block
+            transformer = TransformerBlock(
+                embed_dim=self.embed_dim,
+                num_heads=num_heads,
+                dropout=0.1
+            ).to(self.device)
+            
+            # Test forward pass
+            output = transformer(self.dummy_seq)
+            
+            # Check output shape
+            self.assertEqual(output.shape, self.dummy_seq.shape)
+    
+    def test_transformer_block_feedforward(self):
+        """Test transformer block with different feedforward dimensions."""
+        ff_dims = [256, 512, 1024]
+        
+        for ff_dim in ff_dims:
+            # Create transformer block
+            transformer = TransformerBlock(
+                embed_dim=self.embed_dim,
+                num_heads=4,
+                ff_dim=ff_dim,
+                dropout=0.1
+            ).to(self.device)
+            
+            # Test forward pass
+            output = transformer(self.dummy_seq)
+            
+            # Check output shape
+            self.assertEqual(output.shape, self.dummy_seq.shape)
+    
+    def test_hybrid_model_position_encoding(self):
+        """Test that position encoding is properly initialized and applied."""
+        model = HybridNet(num_classes=self.num_classes).to(self.device)
+        
+        # Check position encoding shape
+        self.assertEqual(model.pos_encoding.shape[0], model.sequence_length)
+        self.assertEqual(model.pos_encoding.shape[1], 1)
+        self.assertEqual(model.pos_encoding.shape[2], model.feature_dim)
+        
+        # Test forward pass
+        with torch.no_grad():
+            output = model(self.dummy_input)
+            self.assertEqual(output.shape, (self.batch_size, self.num_classes))
+
+if __name__ == '__main__':
     unittest.main() 

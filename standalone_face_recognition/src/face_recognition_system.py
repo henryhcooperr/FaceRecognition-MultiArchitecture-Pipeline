@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms, models
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 import seaborn as sns
 from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_curve, precision_score, recall_score, f1_score, accuracy_score, roc_auc_score, average_precision_score
 from sklearn.manifold import TSNE
@@ -34,6 +35,7 @@ from ray.tune.schedulers import ASHAScheduler
 from ray.tune.search.optuna import OptunaSearch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import time
+import unittest
 
 # Project structure
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -583,6 +585,216 @@ class SiameseNet(nn.Module):
     def get_embedding(self, x):
         return self.forward_one(x)
 
+class AttentionModule(nn.Module):
+    """Self-attention module for face recognition."""
+    def __init__(self, in_channels, reduction_ratio=8):
+        super().__init__()
+        self.query = nn.Conv2d(in_channels, in_channels//reduction_ratio, kernel_size=1)
+        self.key = nn.Conv2d(in_channels, in_channels//reduction_ratio, kernel_size=1)
+        self.value = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        self.gamma = nn.Parameter(torch.zeros(1))
+        
+    def forward(self, x):
+        batch_size, C, H, W = x.size()
+        
+        # Project to query, key, value
+        proj_query = self.query(x).view(batch_size, -1, H*W).permute(0, 2, 1)
+        proj_key = self.key(x).view(batch_size, -1, H*W)
+        proj_value = self.value(x).view(batch_size, -1, H*W)
+        
+        # Calculate attention map
+        energy = torch.bmm(proj_query, proj_key)
+        attention = F.softmax(energy, dim=-1)
+        
+        # Apply attention to value
+        out = torch.bmm(proj_value, attention.permute(0, 2, 1))
+        out = out.view(batch_size, C, H, W)
+        
+        # Residual connection
+        return self.gamma * out + x
+
+class AttentionNet(nn.Module):
+    """ResNet with self-attention mechanism for face recognition."""
+    def __init__(self, num_classes=18):
+        super().__init__()
+        self.backbone = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+        # Remove the final FC layer
+        self.features = nn.Sequential(*list(self.backbone.children())[:-2])
+        self.attention = AttentionModule(512)  # ResNet18 has 512 channels in last layer
+        self.gap = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(512, num_classes)
+        
+    def forward(self, x):
+        x = self.features(x)
+        x = self.attention(x)
+        x = self.gap(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
+        
+    def get_embedding(self, x):
+        x = self.features(x)
+        x = self.attention(x)
+        x = self.gap(x)
+        return x.view(x.size(0), -1)
+
+class ArcMarginProduct(nn.Module):
+    """ArcFace loss implementation."""
+    def __init__(self, in_features, out_features, s=30.0, m=0.5):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.s = s  # Scale factor
+        self.m = m  # Margin
+        self.weight = nn.Parameter(torch.FloatTensor(out_features, in_features))
+        nn.init.xavier_uniform_(self.weight)
+        
+    def forward(self, input, label):
+        # Normalize features and weights
+        x = F.normalize(input)
+        w = F.normalize(self.weight)
+        
+        # Compute cosine similarity
+        cos_theta = F.linear(x, w)
+        cos_theta = cos_theta.clamp(-1, 1)
+        
+        # Add margin to target class
+        phi = cos_theta.clone()
+        target_mask = torch.zeros_like(cos_theta)
+        target_mask.scatter_(1, label.view(-1, 1), 1)
+        
+        # Apply margin to target class
+        phi = torch.where(target_mask.bool(), 
+                          torch.cos(torch.acos(cos_theta) + self.m),
+                          cos_theta)
+        
+        # Scale output
+        output = phi * self.s
+        return output
+
+class ArcFaceNet(nn.Module):
+    """Face recognition model using ArcFace loss."""
+    def __init__(self, num_classes=18):
+        super().__init__()
+        self.backbone = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+        self.features = nn.Sequential(*list(self.backbone.children())[:-1])
+        self.embedding = nn.Linear(512, 512)  # Embedding dimension
+        self.arcface = ArcMarginProduct(512, num_classes)
+        
+    def forward(self, x, labels=None):
+        x = self.features(x)
+        x = x.view(x.size(0), -1)
+        embedding = self.embedding(x)
+        
+        if self.training:
+            if labels is None:
+                raise ValueError("Labels must be provided during training")
+            output = self.arcface(embedding, labels)
+            return output
+        else:
+            return embedding
+            
+    def get_embedding(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), -1)
+        return self.embedding(x)
+
+class TransformerBlock(nn.Module):
+    """Simple transformer block for feature refinement."""
+    def __init__(self, embed_dim, num_heads=8, ff_dim=2048, dropout=0.1):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout)
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.ff = nn.Sequential(
+            nn.Linear(embed_dim, ff_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(ff_dim, embed_dim),
+            nn.Dropout(dropout)
+        )
+        
+    def forward(self, x):
+        # x shape: (seq_len, batch, embed_dim)
+        attn_output, _ = self.attention(x, x, x)
+        x = x + attn_output
+        x = self.norm1(x)
+        ff_output = self.ff(x)
+        x = x + ff_output
+        x = self.norm2(x)
+        return x
+
+class HybridNet(nn.Module):
+    """Hybrid CNN-Transformer architecture for face recognition."""
+    def __init__(self, num_classes=18):
+        super().__init__()
+        # CNN Feature Extractor
+        self.cnn = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+        # Remove classification head
+        self.features = nn.Sequential(*list(self.cnn.children())[:-2])
+        
+        # Feature dimensions
+        self.feature_dim = 512
+        self.sequence_length = 49  # 7x7 feature map flattened
+        
+        # Position encoding
+        self.pos_encoding = nn.Parameter(torch.zeros(self.sequence_length, 1, self.feature_dim))
+        nn.init.normal_(self.pos_encoding, mean=0, std=0.02)
+        
+        # Transformer blocks
+        self.transformer = TransformerBlock(self.feature_dim)
+        
+        # Output layers
+        self.norm = nn.LayerNorm(self.feature_dim)
+        self.fc = nn.Linear(self.feature_dim, num_classes)
+    
+    def forward(self, x):
+        # CNN feature extraction
+        x = self.features(x)  # [batch, 512, 7, 7]
+        batch_size = x.shape[0]
+        
+        # Reshape for transformer
+        x = x.view(batch_size, self.feature_dim, -1)  # [batch, 512, 49]
+        x = x.permute(2, 0, 1)  # [49, batch, 512]
+        
+        # Add positional encoding
+        x = x + self.pos_encoding
+        
+        # Apply transformer
+        x = self.transformer(x)
+        
+        # Global pooling (use first token)
+        x = x.mean(dim=0)  # [batch, 512]
+        
+        # Normalization and classification
+        x = self.norm(x)
+        x = self.fc(x)
+        
+        return x
+        
+    def get_embedding(self, x):
+        # CNN feature extraction
+        x = self.features(x)  # [batch, 512, 7, 7]
+        batch_size = x.shape[0]
+        
+        # Reshape for transformer
+        x = x.view(batch_size, self.feature_dim, -1)  # [batch, 512, 49]
+        x = x.permute(2, 0, 1)  # [49, batch, 512]
+        
+        # Add positional encoding
+        x = x + self.pos_encoding
+        
+        # Apply transformer
+        x = self.transformer(x)
+        
+        # Global pooling (use first token)
+        x = x.mean(dim=0)  # [batch, 512]
+        
+        # Normalization
+        x = self.norm(x)
+        
+        return x
+
 class ContrastiveLoss(nn.Module):
     """Contrastive loss function for Siamese network."""
     def __init__(self, margin=2.0):
@@ -602,14 +814,23 @@ def get_model(model_type: str, num_classes: int = 18, input_size: Tuple[int, int
         return ResNetTransfer(num_classes=num_classes)
     elif model_type == 'siamese':
         return SiameseNet()
+    elif model_type == 'attention':
+        return AttentionNet(num_classes=num_classes)
+    elif model_type == 'arcface':
+        return ArcFaceNet(num_classes=num_classes)
+    elif model_type == 'hybrid':
+        return HybridNet(num_classes=num_classes)
     else:
         raise ValueError(f"Invalid model type: {model_type}")
 
 def get_criterion(model_type: str) -> nn.Module:
-    if model_type in ['baseline', 'cnn']:
+    if model_type in ['baseline', 'cnn', 'attention', 'hybrid']:
         return nn.CrossEntropyLoss()
     elif model_type == 'siamese':
         return ContrastiveLoss()
+    elif model_type == 'arcface':
+        # ArcFace models handle loss internally
+        return nn.CrossEntropyLoss()
     else:
         raise ValueError(f"Invalid model type: {model_type}")
 
@@ -747,7 +968,13 @@ def train_model(model_type: str, model_name: Optional[str] = None,
         for batch_idx, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
-            output = model(data)
+            
+            # Handle ArcFace differently
+            if model_type == 'arcface':
+                output = model(data, target)  # ArcFace needs labels during forward pass
+            else:
+                output = model(data)
+                
             loss = criterion(output, target)
             loss.backward()
             optimizer.step()
@@ -760,7 +987,17 @@ def train_model(model_type: str, model_name: Optional[str] = None,
         with torch.no_grad():
             for data, target in val_loader:
                 data, target = data.to(device), target.to(device)
-                output = model(data)
+                
+                # Handle ArcFace differently during validation
+                if model_type == 'arcface':
+                    # In validation, we just need the embeddings
+                    output = model(data)
+                    # For validation purposes, use separate classifier layer
+                    val_classifier = nn.Linear(512, len(train_dataset.classes)).to(device)
+                    output = val_classifier(output)
+                else:
+                    output = model(data)
+                
                 val_loss += criterion(output, target).item()
                 pred = output.argmax(dim=1, keepdim=True)
                 correct += pred.eq(target.view_as(pred)).sum().item()
@@ -1114,6 +1351,11 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None):
     model.load_state_dict(torch.load(model_checkpoint_dir / 'best_model.pth'))
     model.eval()
     
+    # For ArcFace, we need a classifier for evaluation
+    arcface_classifier = None
+    if model_type == 'arcface':
+        arcface_classifier = nn.Linear(512, num_classes).to(device)
+    
     # Initialize metrics
     all_predictions = []
     all_targets = []
@@ -1144,20 +1386,37 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None):
             else:
                 images, labels = batch
                 images = images.to(device)
+                labels = labels.to(device)
                 
                 # Measure inference time
                 start_time = time.time()
-                outputs = model(images)
+                
+                # Handle different model architectures
+                if model_type == 'arcface':
+                    # Get embeddings
+                    embeddings = model(images)
+                    # Use our evaluation classifier or cosine similarity
+                    if arcface_classifier is not None:
+                        outputs = arcface_classifier(embeddings)
+                    else:
+                        # Use cosine similarity as a proxy for classification
+                        outputs = F.linear(
+                            F.normalize(embeddings), 
+                            F.normalize(model.arcface.weight)
+                        )
+                else:
+                    outputs = model(images)
+                
                 inference_times.append(time.time() - start_time)
                 
-                loss = criterion(outputs, labels.to(device))
+                loss = criterion(outputs, labels)
                 total_loss += loss.item()
                 
                 probs = F.softmax(outputs, dim=1)
                 _, predicted = torch.max(outputs, 1)
                 
                 all_predictions.extend(predicted.cpu().numpy())
-                all_targets.extend(labels.numpy())
+                all_targets.extend(labels.cpu().numpy())
                 all_probs.extend(probs.cpu().numpy())
     
     # Convert to numpy arrays
@@ -1260,6 +1519,12 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None):
     logger.info("Generating t-SNE embeddings...")
     plot_tsne_embeddings(model, test_dataset, 
                         str(VISUALIZATIONS_DIR), model_name)
+    
+    # For attention model, visualize attention maps
+    if model_type == 'attention':
+        logger.info("Generating attention map visualizations...")
+        plot_attention_maps(model, test_dataset, num_samples=5,
+                           output_dir=str(VISUALIZATIONS_DIR), model_name=model_name)
     
     logger.info("Evaluation complete! Check the visualizations directory for results.")
 
@@ -1380,6 +1645,30 @@ def tune_hyperparameters(model_type: str, dataset_path: Path, n_trials: int = 50
                 'weight_decay': trial.suggest_float('weight_decay', 1e-5, 1e-3, log=True),
                 'margin': trial.suggest_float('margin', 1.0, 3.0)
             }
+        elif model_type == 'attention':
+            params = {
+                'batch_size': trial.suggest_int('batch_size', 16, 128),
+                'lr': trial.suggest_float('lr', 1e-5, 1e-2, log=True),
+                'weight_decay': trial.suggest_float('weight_decay', 1e-5, 1e-3, log=True),
+                'dropout_rate': trial.suggest_float('dropout_rate', 0.1, 0.7),
+                'reduction_ratio': trial.suggest_int('reduction_ratio', 4, 16)
+            }
+        elif model_type == 'arcface':
+            params = {
+                'batch_size': trial.suggest_int('batch_size', 16, 128),
+                'lr': trial.suggest_float('lr', 1e-5, 1e-2, log=True),
+                'weight_decay': trial.suggest_float('weight_decay', 1e-5, 1e-3, log=True),
+                's': trial.suggest_float('s', 20.0, 40.0),
+                'm': trial.suggest_float('m', 0.3, 0.7)
+            }
+        elif model_type == 'hybrid':
+            params = {
+                'batch_size': trial.suggest_int('batch_size', 16, 128),
+                'lr': trial.suggest_float('lr', 1e-5, 1e-2, log=True),
+                'weight_decay': trial.suggest_float('weight_decay', 1e-5, 1e-3, log=True),
+                'dropout_rate': trial.suggest_float('dropout_rate', 0.1, 0.5),
+                'num_heads': trial.suggest_int('num_heads', 4, 12)
+            }
         else:
             params = {
                 'batch_size': trial.suggest_int('batch_size', 16, 128),
@@ -1392,8 +1681,21 @@ def tune_hyperparameters(model_type: str, dataset_path: Path, n_trials: int = 50
         num_classes = len(train_dataset.classes) if model_type != 'siamese' else 2
         model = get_model(model_type, num_classes).to(device)
         
-        # Set dropout rate for baseline and CNN models
-        if model_type in ['baseline', 'cnn']:
+        # Set model-specific parameters
+        if model_type == 'attention':
+            # Custom AttentionNet with tuned parameters
+            model.attention = AttentionModule(512, reduction_ratio=params['reduction_ratio'])
+        elif model_type == 'arcface':
+            # Update ArcFace parameters
+            model.arcface = ArcMarginProduct(512, num_classes, s=params['s'], m=params['m'])
+        elif model_type == 'hybrid':
+            # Update transformer parameters
+            model.transformer = TransformerBlock(
+                model.feature_dim,
+                num_heads=params['num_heads'],
+                dropout=params['dropout_rate']
+            )
+        elif model_type in ['baseline', 'cnn']:
             if model_type == 'baseline':
                 model.dropout.p = params['dropout_rate']
             else:  # CNN
@@ -1425,7 +1727,13 @@ def tune_hyperparameters(model_type: str, dataset_path: Path, n_trials: int = 50
                     data, target = batch
                     data, target = data.to(device), target.to(device)
                     optimizer.zero_grad()
-                    output = model(data)
+                    
+                    # Handle ArcFace differently
+                    if model_type == 'arcface':
+                        output = model(data, target)
+                    else:
+                        output = model(data)
+                        
                     loss = criterion(output, target)
                 
                 loss.backward()
@@ -1449,7 +1757,17 @@ def tune_hyperparameters(model_type: str, dataset_path: Path, n_trials: int = 50
                     else:
                         data, target = batch
                         data, target = data.to(device), target.to(device)
-                        output = model(data)
+                        
+                        # Handle ArcFace differently during validation
+                        if model_type == 'arcface':
+                            # In validation, we just need the embeddings
+                            output = model(data)
+                            # For validation purposes, use separate classifier layer
+                            val_classifier = nn.Linear(512, len(train_dataset.classes)).to(device)
+                            output = val_classifier(output)
+                        else:
+                            output = model(data)
+                            
                         val_loss += criterion(output, target).item()
                         pred = output.argmax(dim=1, keepdim=True)
                         correct += pred.eq(target.view_as(pred)).sum().item()
@@ -1490,8 +1808,119 @@ def tune_hyperparameters(model_type: str, dataset_path: Path, n_trials: int = 50
     
     return study.best_trial.params
 
+def plot_attention_maps(model: nn.Module, dataset: Dataset, 
+                      num_samples: int, output_dir: str, model_name: str):
+    """Plot attention maps for the AttentionNet model."""
+    if not isinstance(model, AttentionNet):
+        logger.warning("Attention map visualization only works with AttentionNet model")
+        return
+    
+    device = next(model.parameters()).device
+    model.eval()
+    
+    # Create figure for visualization
+    fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5*num_samples))
+    if num_samples == 1:
+        axes = axes.reshape(1, -1)
+    
+    # Register hook to get attention weights
+    attention_weights = []
+    
+    def attention_hook(module, input, output):
+        # For AttentionModule, we want to visualize the attention map
+        # The map is calculated as batch_matrix_product(proj_query, proj_key)
+        batch_size, C, H, W = input[0].size()
+        
+        # Recompute the attention map
+        proj_query = module.query(input[0]).view(batch_size, -1, H*W).permute(0, 2, 1)
+        proj_key = module.key(input[0]).view(batch_size, -1, H*W)
+        
+        # Calculate attention map
+        energy = torch.bmm(proj_query, proj_key)
+        attention = F.softmax(energy, dim=-1)
+        
+        # Average across heads and channels
+        attention_map = attention.mean(dim=1).view(batch_size, H, W)
+        attention_weights.append(attention_map.detach().cpu())
+    
+    # Register hook
+    hook = model.attention.register_forward_hook(attention_hook)
+    
+    try:
+        successful_samples = 0
+        max_attempts = num_samples * 3  # Try up to 3 times the number of samples
+        attempts = 0
+        
+        while successful_samples < num_samples and attempts < max_attempts:
+            attempts += 1
+            
+            # Get random sample
+            idx = random.randint(0, len(dataset)-1)
+            if isinstance(dataset, SiameseDataset):
+                img1, _, _ = dataset[idx]
+                image = img1
+                label_idx = dataset.labels[idx]
+                label_name = dataset.classes[label_idx]
+            else:
+                image, label_idx = dataset[idx]
+                label_name = dataset.classes[label_idx]
+            
+            # Convert to tensor and add batch dimension
+            img_tensor = image.unsqueeze(0).to(device)
+            
+            # Forward pass to trigger hook
+            with torch.no_grad():
+                output = model(img_tensor)
+            
+            if not attention_weights:
+                continue
+            
+            # Get attention map
+            attention_map = attention_weights[-1][0].numpy()
+            
+            # Convert tensor to numpy for plotting
+            img_np = image.permute(1, 2, 0).cpu().numpy()
+            img_np = (img_np * [0.229, 0.224, 0.225] + [0.485, 0.456, 0.406]).clip(0, 1)
+            
+            # Resize attention map to match image size for visualization
+            attention_map_resized = cv2.resize(attention_map, (img_np.shape[1], img_np.shape[0]))
+            
+            # Plot original image
+            axes[successful_samples, 0].imshow(img_np)
+            axes[successful_samples, 0].set_title(f'Original Image\nClass: {label_name}')
+            axes[successful_samples, 0].axis('off')
+            
+            # Plot attention map
+            axes[successful_samples, 1].imshow(attention_map_resized, cmap='jet')
+            axes[successful_samples, 1].set_title('Attention Map')
+            axes[successful_samples, 1].axis('off')
+            
+            # Plot overlay
+            overlay = 0.7 * img_np + 0.3 * cm.jet(attention_map_resized)[:, :, :3]
+            axes[successful_samples, 2].imshow(overlay)
+            axes[successful_samples, 2].set_title('Overlay')
+            axes[successful_samples, 2].axis('off')
+            
+            successful_samples += 1
+            attention_weights.clear()  # Clear for next sample
+            
+    except Exception as e:
+        logger.error(f"Error processing attention maps: {str(e)}")
+    finally:
+        # Remove hook
+        hook.remove()
+    
+    if successful_samples == 0:
+        logger.error("Failed to generate any attention map visualizations")
+        return
+    
+    plt.tight_layout()
+    plt.savefig(Path(output_dir) / model_name / 'attention_maps.png')
+    plt.close()
+
 def main():
     """Interactive interface for the face recognition system."""
+    # Remove the test mode flag handling
     while True:
         print("\nFace Recognition System")
         print("1. Process Raw Data")
@@ -1516,8 +1945,16 @@ def main():
         
         elif choice == '2':
             print("\nModel Training")
-            model_type = input("Enter model type (baseline/cnn/siamese): ")
-            if model_type.lower() not in ['baseline', 'cnn', 'siamese']:
+            print("Available model types:")
+            print("- baseline: Simple CNN architecture")
+            print("- cnn: ResNet18 transfer learning")
+            print("- siamese: Siamese network for verification")
+            print("- attention: ResNet with attention mechanism")
+            print("- arcface: Face recognition with ArcFace loss")
+            print("- hybrid: CNN-Transformer hybrid architecture")
+            
+            model_type = input("Enter model type: ")
+            if model_type.lower() not in ['baseline', 'cnn', 'siamese', 'attention', 'arcface', 'hybrid']:
                 print("Invalid model type")
                 continue
             
@@ -1570,8 +2007,8 @@ def main():
         
         elif choice == '3':
             print("\nModel Evaluation")
-            model_type = input("Enter model type (baseline/cnn/siamese): ")
-            if model_type.lower() not in ['baseline', 'cnn', 'siamese']:
+            model_type = input("Enter model type (baseline/cnn/siamese/attention/arcface/hybrid): ")
+            if model_type.lower() not in ['baseline', 'cnn', 'siamese', 'attention', 'arcface', 'hybrid']:
                 print("Invalid model type")
                 continue
             
@@ -1607,8 +2044,16 @@ def main():
         
         elif choice == '4':
             print("\nHyperparameter Tuning")
-            model_type = input("Enter model type (baseline/cnn/siamese): ")
-            if model_type.lower() not in ['baseline', 'cnn', 'siamese']:
+            print("Available model types:")
+            print("- baseline: Simple CNN architecture")
+            print("- cnn: ResNet18 transfer learning")
+            print("- siamese: Siamese network for verification")
+            print("- attention: ResNet with attention mechanism")
+            print("- arcface: Face recognition with ArcFace loss")
+            print("- hybrid: CNN-Transformer hybrid architecture")
+            
+            model_type = input("Enter model type: ")
+            if model_type.lower() not in ['baseline', 'cnn', 'siamese', 'attention', 'arcface', 'hybrid']:
                 print("Invalid model type")
                 continue
             
@@ -1649,7 +2094,7 @@ def main():
                         lr=best_params['lr']
                     )
                     print(f"\nModel trained and saved as: {trained_model_name}")
-        
+                    
         elif choice == '5':
             print("\nProcessed Datasets:")
             processed_dirs = [d for d in PROCESSED_DATA_DIR.iterdir() if d.is_dir()]
