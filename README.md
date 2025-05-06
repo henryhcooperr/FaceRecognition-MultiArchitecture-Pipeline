@@ -1,6 +1,6 @@
 # Standalone Face Recognition System
 
-This is a standalone version of the face recognition system that automatically handles data organization and processing.
+This is a standalone face recognition system that provides both a training pipeline and a live webcam demo for real-time face detection and recognition.
 
 ## Project Structure
 
@@ -16,18 +16,20 @@ standalone_face_recognition/
 ├── outputs/
 │   ├── checkpoints/    # Saved model checkpoints
 │   └── visualizations/ # Training plots and evaluation visualizations
-└── src/
-    └── face_recognition_system.py  # Main script
+├── src/
+│   ├── face_recognition_system.py  # Training pipeline
+│   └── app.py          # Live webcam demo
+└── face_references/    # Storage for recognized faces in the live demo
 ```
 
 ## Setup
 
 1. Install the required dependencies:
 ```bash
-pip install torch torchvision numpy matplotlib seaborn scikit-learn pandas tqdm pillow facenet-pytorch albumentations optuna ray
+pip install -r requirements.txt
 ```
 
-2. Organize your raw data:
+2. For training:
    - Create a folder for each class in `data/raw/`
    - Place all images for each class in their respective folders
    - Supported image formats: JPG, PNG
@@ -47,20 +49,28 @@ data/raw/
 
 ## Usage
 
-Run the main script:
+### Training Pipeline
+Run the training script:
 ```bash
 python src/face_recognition_system.py
 ```
 
+### Live Webcam Demo
+Run the Streamlit app:
+```bash
+streamlit run src/app.py
+```
 
-For the Live Demo
-'''bash
-streamlit run standalone_face_recognition/src/app.py
-'''
+The live demo provides:
+- Real-time face detection and recognition
+- Ability to add new faces to the recognition database
+- Adjustable recognition threshold
+- Multiple face tracking and labeling
+- Persistent storage of recognized faces
 
+## Features
 
-The system provides an interactive menu with the following options:
-
+### Training Pipeline
 1. **Process Raw Data**
    - Configure preprocessing settings
    - Apply face detection and alignment
@@ -76,13 +86,21 @@ The system provides an interactive menu with the following options:
    - Visualizations and analysis
    - Performance benchmarking
 
-4. **List Processed Datasets**
-   - View available processed datasets
-   - Check preprocessing configurations
+### Live Demo
+1. **Real-time Face Detection**
+   - Multiple face detection
+   - Confidence scores
+   - Face tracking
 
-5. **List Trained Models**
-   - View available trained models
-   - Check model versions and types
+2. **Face Recognition**
+   - Real-time recognition of known faces
+   - Adjustable recognition threshold
+   - Distance-based matching
+
+3. **Face Management**
+   - Add new faces through webcam
+   - View stored reference faces
+   - Clear reference database
 
 ## Model Types
 
@@ -137,6 +155,10 @@ The system provides comprehensive evaluation metrics:
   - t-SNE visualization of embeddings
   - Grad-CAM visualizations
 
+- **Face References**: Saved in `face_references/`
+  - Stored face images and embeddings
+  - Persistent across sessions
+
 ## Notes
 
 - The system automatically handles data organization and augmentation
@@ -144,4 +166,5 @@ The system provides comprehensive evaluation metrics:
 - GPU support is automatic if available
 - Models can be resumed from checkpoints
 - Visualizations are automatically generated and saved
-- Comprehensive error handling and logging 
+- Comprehensive error handling and logging
+- Live demo supports multiple face tracking and recognition 
