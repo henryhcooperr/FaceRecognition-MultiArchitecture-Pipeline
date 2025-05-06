@@ -52,6 +52,13 @@ Run the main script:
 python src/face_recognition_system.py
 ```
 
+
+For the Live Demo
+'''bash
+streamlit run standalone_face_recognition/src/app.py
+'''
+
+
 The system provides an interactive menu with the following options:
 
 1. **Process Raw Data**
