@@ -9,20 +9,23 @@ standalone_face_recognition/
 ├── data/
 │   ├── raw/              # Place your raw image data here
 │   └── processed/        # Automatically organized train/val/test splits
-│       ├── train/
-│       ├── val/
-│       └── test/
-├── models/              # Model architecture definitions
+├── models/               # Saved model definitions
 ├── outputs/
-│   ├── checkpoints/    # Saved model checkpoints
-│   └── visualizations/ # Training plots and evaluation visualizations
+│   ├── checkpoints/      # Saved model checkpoints
+│   └── visualizations/   # Training plots and evaluation visualizations
 ├── src/
-│   ├── face_recognition_system.py  # Training pipeline
-│   └── app.py          # Live webcam demo
-├── tests/              # Test suite for the system
-│   └── test_face_recognition_system.py
-├── run_tests.py        # Script to run all tests
-└── face_references/    # Storage for recognized faces in the live demo
+│   ├── __init__.py       # Package initialization
+│   ├── base_config.py    # Paths and configuration settings
+│   ├── face_models.py    # All model definitions
+│   ├── data_prep.py      # Face detection and preprocessing
+│   ├── training.py       # Training functions
+│   ├── testing.py        # Evaluation and metrics
+│   ├── visualize.py      # Visualization functions
+│   ├── app.py            # Live webcam demo (Streamlit)
+│   └── main.py           # Command-line interface
+├── tests/                # Test suite for the system
+├── run_tests.py          # Script to run all tests
+└── run.py                # Main entry point script
 ```
 
 ## Setup
@@ -52,10 +55,54 @@ data/raw/
 
 ## Usage
 
-### Training Pipeline
-Run the training script:
+### Command-Line Interface
+
+The system now uses a unified command-line interface:
+
 ```bash
-python src/face_recognition_system.py
+python run.py <command> [options]
+```
+
+Available commands:
+
+1. **Preprocess** data:
+```bash
+python run.py preprocess
+```
+
+2. **Train** a model:
+```bash
+python run.py train --model-type cnn --epochs 50
+```
+
+3. **Evaluate** a model:
+```bash
+python run.py evaluate --model-type cnn
+```
+
+4. **Predict** on a single image:
+```bash
+python run.py predict --model-type cnn --image-path path/to/image.jpg
+```
+
+5. **Tune** hyperparameters:
+```bash
+python run.py tune --model-type cnn --n-trials 50
+```
+
+6. Check GPU availability:
+```bash
+python run.py check-gpu
+```
+
+7. List available trained models:
+```bash
+python run.py list-models
+```
+
+For help on any command:
+```bash
+python run.py <command> --help
 ```
 
 ### Live Webcam Demo
@@ -70,13 +117,20 @@ To run the automated test suite:
 python run_tests.py
 ```
 
-The system includes comprehensive tests for:
-- Model creation and forward passes with different input sizes
-- Preprocessing with various configurations
-- Data processing pipeline
-- Training and evaluation (requires GPU)
+## System Architecture
 
-The test suite uses a small synthetic dataset to ensure fast execution.
+The system is organized in a modular structure:
+
+- **base_config.py**: Contains paths, constants, and basic utility functions
+- **face_models.py**: All model definitions (BaselineNet, ResNetTransfer, SiameseNet, etc.)
+- **data_prep.py**: Face detection, alignment, preprocessing, and augmentation
+- **training.py**: Dataset classes and training functions
+- **testing.py**: Evaluation and metrics calculations
+- **visualize.py**: Visualization functions for model outputs and embeddings
+- **main.py**: Command-line interface with all available commands
+- **app.py**: Streamlit-based live webcam interface
+
+This modular design makes the code easier to understand, maintain, and extend.
 
 ## Features
 
@@ -87,7 +141,7 @@ The test suite uses a small synthetic dataset to ensure fast execution.
    - Split data into train/val/test sets
 
 2. **Train Model**
-   - Choose model type (baseline/cnn/siamese)
+   - Choose model type (baseline/cnn/siamese/attention/arcface/hybrid)
    - Select processed dataset
    - Configure training parameters
 
@@ -128,6 +182,18 @@ The test suite uses a small synthetic dataset to ensure fast execution.
    - For face verification/comparison
    - Good for few-shot learning
 
+4. **Attention Network (attention)**
+   - ResNet with self-attention mechanism
+   - Better focus on discriminative facial regions
+
+5. **ArcFace Network (arcface)**
+   - Uses Angular margin loss for better discrimination
+   - State-of-the-art approach for face recognition
+
+6. **Hybrid Network (hybrid)**
+   - CNN-Transformer hybrid architecture
+   - Combines local and global feature representation
+
 ## Evaluation Metrics
 
 The system provides comprehensive evaluation metrics:
@@ -146,6 +212,7 @@ The system provides comprehensive evaluation metrics:
    - Precision-Recall Curves
    - Grad-CAM Visualizations
    - t-SNE Embeddings
+   - Attention Maps (for attention models)
 
 3. **Performance Metrics**
    - Training/Validation/Test Loss
@@ -155,8 +222,7 @@ The system provides comprehensive evaluation metrics:
 ## Outputs
 
 - **Checkpoints**: Saved in `outputs/checkpoints/`
-  - `best_model_{model_type}.pth`: Best performing model
-  - `checkpoint_{model_type}.pth`: Latest training checkpoint
+  - `best_model.pth`: Best performing model
 
 - **Visualizations**: Saved in `outputs/visualizations/`
   - Training progress plots
@@ -165,10 +231,6 @@ The system provides comprehensive evaluation metrics:
   - Precision-Recall curve
   - t-SNE visualization of embeddings
   - Grad-CAM visualizations
-
-- **Face References**: Saved in `face_references/`
-  - Stored face images and embeddings
-  - Persistent across sessions
 
 ## Notes
 
@@ -179,4 +241,4 @@ The system provides comprehensive evaluation metrics:
 - Visualizations are automatically generated and saved
 - Comprehensive error handling and logging
 - Live demo supports multiple face tracking and recognition
-- The baseline model now supports variable input sizes for increased flexibility 
+- Models support different input sizes for increased flexibility 

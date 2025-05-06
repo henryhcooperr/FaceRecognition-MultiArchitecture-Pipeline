@@ -1,4 +1,21 @@
-def main():
+#!/usr/bin/env python3
+
+import sys
+import json
+from pathlib import Path
+
+import torch
+
+from .base_config import (
+    logger, CHECKPOINTS_DIR, PROCESSED_DATA_DIR, 
+    get_user_confirmation
+)
+from .data_prep import get_preprocessing_config, process_raw_data
+from .training import train_model, tune_hyperparameters
+from .testing import evaluate_model, predict_image
+from .face_models import get_model
+
+def interactive_menu():
     """Interactive interface for the face recognition system."""
     # Add a command line parser for test mode
     if len(sys.argv) > 1 and sys.argv[1] == '--test':

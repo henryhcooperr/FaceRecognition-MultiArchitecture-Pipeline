@@ -14,21 +14,24 @@ from PIL import Image
 import torch.nn as nn
 from torch.utils.data import Dataset
 
-# Add parent directory to path so we can import the face_recognition_system module
+# Add parent directory to path to ensure imports work correctly
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.face_recognition_system import (
-    PreprocessingConfig, preprocess_image, process_raw_data,
-    get_model, get_criterion, train_model, evaluate_model,
-    PROCESSED_DATA_DIR, RAW_DATA_DIR, CHECKPOINTS_DIR, OUTPUTS_DIR,
+
+# Import from our new modular structure
+from src.base_config import (
+    PROCESSED_DATA_DIR, RAW_DATA_DIR, CHECKPOINTS_DIR, OUTPUTS_DIR, logger
+)
+from src.face_models import (
     BaselineNet, ResNetTransfer, SiameseNet, 
     AttentionNet, ArcFaceNet, HybridNet,
     AttentionModule, TransformerBlock, ArcMarginProduct,
-    ContrastiveLoss
+    ContrastiveLoss, get_model, get_criterion
 )
-
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from src.data_prep import (
+    PreprocessingConfig, preprocess_image, process_raw_data
+)
+from src.training import train_model
+from src.testing import evaluate_model
 
 # Mock tqdm to avoid progress bars in tests
 import unittest.mock
@@ -48,8 +51,8 @@ class MockTqdm:
     def close(self):
         pass
 
-# Patch tqdm with our mock version
-unittest.mock.patch('src.face_recognition_system.tqdm', MockTqdm).start()
+# Patch tqdm with our mock version - update patch to point to src.data_prep
+unittest.mock.patch('src.data_prep.tqdm', MockTqdm).start()
 
 # Set random seeds for reproducibility
 random.seed(42)
@@ -76,25 +79,54 @@ class TestFaceRecognitionSystem(unittest.TestCase):
         cls.original_checkpoints_dir = CHECKPOINTS_DIR
         cls.original_outputs_dir = OUTPUTS_DIR
         
-        # Replace with test directories
-        sys.modules["src.face_recognition_system"].RAW_DATA_DIR = cls.test_raw_dir
-        sys.modules["src.face_recognition_system"].PROCESSED_DATA_DIR = cls.temp_dir / "processed"
-        sys.modules["src.face_recognition_system"].CHECKPOINTS_DIR = cls.temp_dir / "checkpoints"
-        sys.modules["src.face_recognition_system"].OUTPUTS_DIR = cls.temp_dir / "outputs"
+        # Replace with test directories in each module
+        from src import base_config, data_prep, training, testing
+        
+        # Update base_config module and all dependent modules
+        base_config.RAW_DATA_DIR = cls.test_raw_dir
+        base_config.PROCESSED_DATA_DIR = cls.temp_dir / "processed"
+        base_config.CHECKPOINTS_DIR = cls.temp_dir / "checkpoints"
+        base_config.OUTPUTS_DIR = cls.temp_dir / "outputs"
+        
+        # Update references in dependent modules
+        data_prep.RAW_DATA_DIR = base_config.RAW_DATA_DIR
+        data_prep.PROCESSED_DATA_DIR = base_config.PROCESSED_DATA_DIR
+        
+        training.PROCESSED_DATA_DIR = base_config.PROCESSED_DATA_DIR
+        training.CHECKPOINTS_DIR = base_config.CHECKPOINTS_DIR
+        
+        testing.PROCESSED_DATA_DIR = base_config.PROCESSED_DATA_DIR
+        testing.CHECKPOINTS_DIR = base_config.CHECKPOINTS_DIR
+        testing.VISUALIZATIONS_DIR = base_config.OUTPUTS_DIR / "visualizations"
         
         # Ensure directories exist
-        sys.modules["src.face_recognition_system"].PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-        sys.modules["src.face_recognition_system"].CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
-        sys.modules["src.face_recognition_system"].OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+        base_config.PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        base_config.CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
+        base_config.OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+        testing.VISUALIZATIONS_DIR.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def tearDownClass(cls):
         """Clean up after all tests."""
         # Restore original directories
-        sys.modules["src.face_recognition_system"].RAW_DATA_DIR = cls.original_raw_dir
-        sys.modules["src.face_recognition_system"].PROCESSED_DATA_DIR = cls.original_processed_dir
-        sys.modules["src.face_recognition_system"].CHECKPOINTS_DIR = cls.original_checkpoints_dir
-        sys.modules["src.face_recognition_system"].OUTPUTS_DIR = cls.original_outputs_dir
+        from src import base_config, data_prep, training, testing
+        
+        # Restore in base_config
+        base_config.RAW_DATA_DIR = cls.original_raw_dir
+        base_config.PROCESSED_DATA_DIR = cls.original_processed_dir
+        base_config.CHECKPOINTS_DIR = cls.original_checkpoints_dir
+        base_config.OUTPUTS_DIR = cls.original_outputs_dir
+        
+        # Restore in dependent modules
+        data_prep.RAW_DATA_DIR = base_config.RAW_DATA_DIR
+        data_prep.PROCESSED_DATA_DIR = base_config.PROCESSED_DATA_DIR
+        
+        training.PROCESSED_DATA_DIR = base_config.PROCESSED_DATA_DIR
+        training.CHECKPOINTS_DIR = base_config.CHECKPOINTS_DIR
+        
+        testing.PROCESSED_DATA_DIR = base_config.PROCESSED_DATA_DIR
+        testing.CHECKPOINTS_DIR = base_config.CHECKPOINTS_DIR
+        testing.VISUALIZATIONS_DIR = base_config.OUTPUTS_DIR / "visualizations"
         
         # Clean up temp directory
         shutil.rmtree(cls.temp_dir)
@@ -224,7 +256,9 @@ class TestFaceRecognitionSystem(unittest.TestCase):
             self.skipTest("Skipping test_train_and_evaluate as it requires GPU")
         
         # First process the data if not already done
-        if not (sys.modules["src.face_recognition_system"].PROCESSED_DATA_DIR / "test_processed").exists():
+        from src.base_config import PROCESSED_DATA_DIR
+        
+        if not (PROCESSED_DATA_DIR / "test_processed").exists():
             config = PreprocessingConfig(
                 name="test_processed",
                 use_mtcnn=False,  # Skip MTCNN for faster testing
@@ -232,23 +266,25 @@ class TestFaceRecognitionSystem(unittest.TestCase):
             )
             process_raw_data(config, test_mode=True)
         
-        # Mock train_model to use minimal settings
-        original_train_model = sys.modules["src.face_recognition_system"].train_model
+        # Patch train_model to use minimal settings
+        from src import training, testing
+        
+        original_train_model = training.train_model
         
         def mock_train_model(model_type, model_name=None, batch_size=2, epochs=1, lr=0.001, weight_decay=1e-4):
             """Mock train_model to run with minimal epochs and batch size."""
             return original_train_model(model_type, model_name, batch_size, epochs, lr, weight_decay)
         
         # Replace with mock
-        sys.modules["src.face_recognition_system"].train_model = mock_train_model
+        training.train_model = mock_train_model
         
         # Mock evaluate_model to avoid long computations
-        original_evaluate_model = sys.modules["src.face_recognition_system"].evaluate_model
+        original_evaluate_model = testing.evaluate_model
         
         def mock_evaluate_model(model_type, model_name=None):
             """Mock evaluate_model to skip intensive computations."""
             print(f"Mock evaluating {model_type} model: {model_name}")
-            return True
+            return {"accuracy": 0.8}
         
         try:
             # Test each model type
@@ -257,7 +293,7 @@ class TestFaceRecognitionSystem(unittest.TestCase):
                 print(f"\nTesting {model_type} model...")
                 
                 # Replace the evaluate function with our mock for each iteration
-                sys.modules["src.face_recognition_system"].evaluate_model = mock_evaluate_model
+                testing.evaluate_model = mock_evaluate_model
                 
                 try:
                     # Train a model with minimal settings
@@ -271,20 +307,20 @@ class TestFaceRecognitionSystem(unittest.TestCase):
                     self.assertIsNotNone(model_name)
                     
                     # Test that model files were created
-                    model_checkpoint_dir = sys.modules["src.face_recognition_system"].CHECKPOINTS_DIR / model_name
+                    model_checkpoint_dir = CHECKPOINTS_DIR / model_name
                     self.assertTrue((model_checkpoint_dir / "best_model.pth").exists())
                     
                     # Test evaluating the model
                     result = evaluate_model(model_type, model_name)
-                    self.assertTrue(result)
+                    self.assertTrue(isinstance(result, dict))
                 
                 except Exception as e:
                     self.fail(f"Testing {model_type} model failed: {str(e)}")
                 
         finally:
             # Restore original functions
-            sys.modules["src.face_recognition_system"].train_model = original_train_model
-            sys.modules["src.face_recognition_system"].evaluate_model = original_evaluate_model
+            training.train_model = original_train_model
+            testing.evaluate_model = original_evaluate_model
 
     def test_preprocessing_variations(self):
         """Test preprocessing with different parameter variations."""
