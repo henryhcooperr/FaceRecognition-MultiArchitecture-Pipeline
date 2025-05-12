@@ -104,11 +104,85 @@ Run k-fold cross-validation on a selected model and dataset.
 
 ### Hyperparameter Tuning
 
-```
-python run.py hyperopt
+The system includes an advanced hyperparameter tuning module that uses Optuna to optimize model performance. You can run hyperparameter tuning either through the interactive menu or via command line.
+
+### Features
+
+- Support for multiple model types (baseline, CNN, Siamese, Attention, ArcFace, Hybrid, Ensemble)
+- Multiple optimizer options (AdamW, RAdam, SGD with momentum)
+- Advanced learning rate schedulers (cosine, one-cycle, plateau)
+- Trial-0 baseline support for better initial exploration
+- Automatic checkpoint management
+- Early stopping and pruning of unpromising trials
+- Comprehensive hyperparameter search space including:
+  - Learning rate
+  - Batch size
+  - Weight decay
+  - Dropout rate
+  - Optimizer selection
+  - Scheduler selection and parameters
+  - Model-specific parameters (e.g., ArcFace margin, attention heads)
+
+### Interactive Menu
+
+To run hyperparameter tuning through the interactive menu:
+
+1. Select option 5 (Hyperparameter Tuning)
+2. Choose a model type from the available options
+3. Select a processed dataset
+4. Configure tuning parameters:
+   - Number of trials (default: 20)
+   - Timeout in seconds (optional)
+   - Whether to use trial-0 baseline
+   - Number of checkpoints to keep per trial
+5. Start the tuning process
+6. Optionally train a model with the best parameters after tuning
+
+### Command Line
+
+You can also run hyperparameter tuning via command line:
+
+```bash
+python run.py hyperopt --model-type <model_type> --dataset <dataset_path> [options]
 ```
 
-Optimize hyperparameters for a selected model and dataset using Optuna.
+Required arguments:
+- `--model-type`: Type of model to tune (one of: baseline, cnn, siamese, attention, arcface, hybrid, ensemble)
+- `--dataset`: Path to the processed dataset directory
+
+Optional arguments:
+- `--n-trials`: Number of trials to run (default: 20)
+- `--timeout`: Timeout in seconds (optional)
+- `--use-trial0-baseline`: Use trial-0 baseline for first trial
+- `--keep-checkpoints`: Number of best checkpoints to keep per trial (default: 1)
+- `--train-best`: Train a model with the best parameters after tuning
+- `--epochs`: Number of epochs for training with best parameters (default: 50)
+
+Example:
+```bash
+# Run hyperparameter tuning with trial-0 baseline and train best model
+python run.py hyperopt --model-type arcface --dataset data/processed/lfw --use-trial0-baseline --train-best --epochs 100
+
+# Run hyperparameter tuning with timeout
+python run.py hyperopt --model-type hybrid --dataset data/processed/celeba --n-trials 50 --timeout 3600
+```
+
+### Trial-0 Baseline
+
+The system includes predefined baseline configurations for each model type, which can be used as a starting point for hyperparameter tuning. These baselines are based on common best practices and research findings. To use the trial-0 baseline:
+
+- In interactive menu: Answer 'y' to "Use trial-0 baseline for first trial?"
+- In command line: Add the `--use-trial0-baseline` flag
+
+### Results
+
+After hyperparameter tuning completes, the system will:
+1. Display the best accuracy achieved
+2. Show the best hyperparameters found
+3. Optionally train a model with these parameters
+4. Save all trial results and checkpoints in the `outputs/hyperopt_runs` directory
+
+The best model checkpoints are saved with their trial number and validation accuracy in the filename.
 
 ## Interactive Menu Options
 

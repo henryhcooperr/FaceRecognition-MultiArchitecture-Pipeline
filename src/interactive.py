@@ -15,7 +15,7 @@ from .data_prep import get_preprocessing_config, process_raw_data, Preprocessing
 from .training import train_model
 from .testing import evaluate_model, predict_image
 from .face_models import get_model
-from .hyperparameter_tuning import run_hyperparameter_tuning
+from .hyperparameter_tuning import run_hyperparameter_tuning, MODEL_TYPES
 from .cross_validation import run_cross_validation
 from . import download_dataset
 
@@ -388,16 +388,11 @@ def interactive_menu():
         elif choice == '5':
             print("\nHyperparameter Tuning")
             print("Available model types:")
-            print("- baseline: Simple CNN architecture")
-            print("- cnn: ResNet18 transfer learning")
-            print("- siamese: Siamese network for verification")
-            print("- attention: ResNet with attention mechanism")
-            print("- arcface: Face recognition with ArcFace loss")
-            print("- hybrid: CNN-Transformer hybrid architecture")
-            print("- ensemble: Combination of multiple models")
+            for mt in MODEL_TYPES:
+                print(f"- {mt}")
             
             model_type = input("Enter model type: ")
-            if model_type.lower() not in ['baseline', 'cnn', 'siamese', 'attention', 'arcface', 'hybrid', 'ensemble']:
+            if model_type.lower() not in MODEL_TYPES:
                 print("Invalid model type")
                 continue
             
@@ -417,10 +412,10 @@ def interactive_menu():
                     for dataset_dir in config_dir.iterdir():
                         if dataset_dir.is_dir() and (dataset_dir / "train").exists():
                             # Use config/dataset naming
-                            dataset_path = f"{config_dir.name}/{dataset_dir.name}"
-                            if dataset_path not in dataset_names:
-                                processed_dirs.append((dataset_dir, dataset_path))
-                                dataset_names.add(dataset_path)
+                            dataset_name = f"{config_dir.name}/{dataset_dir.name}"
+                            if dataset_name not in dataset_names:
+                                processed_dirs.append((dataset_dir, dataset_name))
+                                dataset_names.add(dataset_name)
             
             # Also check for simpler structure where train is directly in PROC_DATA_DIR
             if (PROC_DATA_DIR / "train").exists() and (PROC_DATA_DIR / "val").exists():
@@ -436,7 +431,6 @@ def interactive_menu():
             for i, (dir_path, display_name) in enumerate(processed_dirs, 1):
                 print(f"{i}. {display_name}")
             
-            selected_data_dir = None
             while True:
                 dataset_choice = input("\nEnter dataset number to use for tuning: ")
                 try:
@@ -449,12 +443,62 @@ def interactive_menu():
                 except ValueError:
                     print("Please enter a valid number.")
             
-            n_trials = int(input("Enter number of trials (default 50): ") or "50")
+            # Get hyperparameter tuning options
+            n_trials = int(input("Enter number of trials (default 20): ") or "20")
+            timeout = input("Enter timeout in seconds (optional, press Enter for no timeout): ")
+            timeout = int(timeout) if timeout else None
+            
+            use_trial0_baseline = get_user_confirmation("Use trial-0 baseline for first trial? (y/n): ")
+            keep_checkpoints = int(input("Number of best checkpoints to keep per trial (default 1): ") or "1")
             
             if get_user_confirmation("Start hyperparameter tuning? (y/n): "):
-                # Call the run_hyperparameter_tuning function with the selected model type and dataset
-                best_params = run_hyperparameter_tuning(model_type, selected_data_dir, n_trials, existing_model=None)
-                
+                try:
+                    # Call the run_hyperparameter_tuning function with all options
+                    results = run_hyperparameter_tuning(
+                        model_type=model_type,
+                        dataset_path=selected_data_dir,
+                        n_trials=n_trials,
+                        timeout=timeout,
+                        use_trial0_baseline=use_trial0_baseline,
+                        keep_checkpoints=keep_checkpoints
+                    )
+                    
+                    if results:
+                        print("\nHyperparameter tuning complete!")
+                        print(f"Best accuracy: {results['best_accuracy']*100:.2f}%")
+                        print(f"Best parameters: {results['best_params']}")
+                        
+                        # Ask if user wants to train a model with these parameters
+                        if get_user_confirmation("\nTrain a model with these parameters? (y/n): "):
+                            from .training import train_model
+                            
+                            # Create a good model name
+                            model_name = f"{model_type}_tuned_{selected_data_dir.name}"
+                            
+                            # Set epochs to a reasonable value for full training
+                            epochs = int(input(f"Enter number of epochs (default 50): ") or "50")
+                            
+                            # Train the model with the best parameters
+                            trained_model_name = train_model(
+                                model_type=model_type,
+                                model_name=model_name,
+                                batch_size=results['best_params']['batch_size'],
+                                epochs=epochs,
+                                lr=results['best_params']['learning_rate'],
+                                weight_decay=results['best_params']['weight_decay'],
+                                scheduler_type=results['best_params'].get('scheduler', 'cosine'),
+                                scheduler_patience=results['best_params'].get('scheduler_patience', 5),
+                                scheduler_factor=results['best_params'].get('scheduler_factor', 0.5),
+                                gradient_clip_val=results['best_params'].get('gradient_clip_val', None),
+                                early_stopping=True,
+                                early_stopping_patience=results['best_params'].get('early_stopping_patience', 10),
+                                dataset_path=selected_data_dir,
+                                dropout=results['best_params'].get('dropout', 0.0)
+                            )
+                            print(f"\nModel trained and saved as: {trained_model_name}")
+                except Exception as e:
+                    print(f"Error during hyperparameter tuning: {str(e)}")
+        
         elif choice == '6':
             print("\nCross-Validation")
             print("Available model types:")
