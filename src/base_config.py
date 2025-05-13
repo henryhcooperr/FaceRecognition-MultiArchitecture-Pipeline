@@ -18,11 +18,6 @@ OUT_DIR = PROJECT_ROOT / "outputs"  # shortened this
 CHECKPOINTS_DIR = OUT_DIR / "checkpoints"
 VIZ_DIR = OUT_DIR / "visualizations"  
 
-# Experiment tracking directories
-TRACKING_DIR = OUT_DIR / "tracking"
-MLFLOW_DIR = TRACKING_DIR / "mlflow"
-WANDB_DIR = TRACKING_DIR / "wandb"
-
 # Added these after I kept typing the wrong paths - lazy but effective
 TRAIN_DIR = PROC_DATA_DIR / "train"
 VAL_DIR = PROC_DATA_DIR / "val"
@@ -39,21 +34,11 @@ DEFAULT_EPOCHS = 50
 DEFAULT_LR = 1e-3  # 0.001 seems to work well for most models
 IMG_SIZE = 224  # This is what ResNet expects
 
-# Experiment tracking configuration
-# By default, we use MLflow for tracking because it's more lightweight
-# and doesn't require an account, but W&B has a nicer UI
-TRACKING_ENABLED = True
-DEFAULT_TRACKER = "mlflow"  # Options: "mlflow", "wandb", "none"
-MLFLOW_TRACKING_URI = f"file://{MLFLOW_DIR}"
-WANDB_PROJECT = "face-recognition"
-WANDB_ENTITY = None  # Set to your W&B username or team name
-
 # Make sure all our directories exist
 # This annoyed me to no end when things failed silently
 for dir_path in [RAW_DATA_DIR, PROC_DATA_DIR, MODELS_DIR, 
                 CHECKPOINTS_DIR, VIZ_DIR,
-                TRAIN_DIR, VAL_DIR, TEST_DIR,
-                TRACKING_DIR, MLFLOW_DIR, WANDB_DIR]:
+                TRAIN_DIR, VAL_DIR, TEST_DIR]:
     dir_path.mkdir(parents=True, exist_ok=True)
 
 # Configure logging - super helpful for debugging
@@ -147,40 +132,3 @@ def set_random_seeds(seed: int = 42, deterministic: bool = True):
     logger.info(f"Random seeds have been set to {seed}")
     
     return seed 
-
-def get_tracking_config():
-    """
-    Get the default tracking configuration based on environment variables and defaults.
-    
-    Environment variables:
-    - TRACKING_ENABLED: "true" or "false" to enable/disable tracking
-    - TRACKING_SYSTEM: "mlflow", "wandb", or "none"
-    - MLFLOW_TRACKING_URI: URI for MLflow tracking server
-    - WANDB_PROJECT: Project name for W&B
-    - WANDB_ENTITY: Entity (username or team) for W&B
-    
-    Returns:
-        Dictionary with tracking configuration
-    """
-    # Check environment variables
-    tracking_enabled = os.environ.get("TRACKING_ENABLED", str(TRACKING_ENABLED)).lower() == "true"
-    tracker_type = os.environ.get("TRACKING_SYSTEM", DEFAULT_TRACKER).lower()
-    mlflow_uri = os.environ.get("MLFLOW_TRACKING_URI", MLFLOW_TRACKING_URI)
-    wandb_project = os.environ.get("WANDB_PROJECT", WANDB_PROJECT)
-    wandb_entity = os.environ.get("WANDB_ENTITY", WANDB_ENTITY)
-    
-    # Create configuration dictionary
-    config = {
-        "enabled": tracking_enabled,
-        "tracker_type": tracker_type if tracking_enabled else "none",
-        "mlflow_tracking_uri": mlflow_uri,
-        "wandb_project": wandb_project,
-        "wandb_entity": wandb_entity,
-        "track_metrics": True,
-        "track_params": True,
-        "track_artifacts": True,
-        "track_models": True,
-        "register_best_model": False,
-    }
-    
-    return config 
