@@ -43,21 +43,26 @@ def check_and_download_datasets():
     print("\nNo face recognition datasets found.")
     print("Automatically downloading all datasets...")
     try:
-        subprocess.run([sys.executable, str(downloader_script)], check=True)
-        
-        # Check if download was successful
-        dataset_dirs = [d for d in RAW_DATA_DIR.iterdir() if d.is_dir()]
-        if dataset_dirs:
-            print("\nDatasets downloaded successfully:")
-            for d in dataset_dirs:
-                info_file = d / "info.txt"
-                if info_file.exists():
-                    print(f"- {d.name}")
-                    with open(info_file) as f:
-                        for line in f:
-                            if line.startswith("Description:") or line.startswith("Number of"):
-                                print(f"  {line.strip()}")
-            return True
+        # Call the download_all_datasets function directly
+        success = download_dataset.download_all_datasets()
+
+        if success:
+            # Check if download was successful
+            dataset_dirs = [d for d in RAW_DATA_DIR.iterdir() if d.is_dir()]
+            if dataset_dirs:
+                print("\nDatasets downloaded successfully:")
+                for d in dataset_dirs:
+                    info_file = d / "info.txt"
+                    if info_file.exists():
+                        print(f"- {d.name}")
+                        with open(info_file) as f:
+                            for line in f:
+                                if line.startswith("Description:") or line.startswith("Number of"):
+                                    print(f"  {line.strip()}")
+                return True
+            else:
+                print("No datasets found after download.")
+                return False
         else:
             print("Failed to download datasets.")
             return False
@@ -299,7 +304,17 @@ def interactive_menu():
             # Basic parameters
             epochs = int(input("Enter number of epochs (default 50): ") or "50")
             batch_size = int(input("Enter batch size (default 32): ") or "32")
-            lr = float(input("Enter learning rate (default 0.001): ") or "0.001")
+            
+            # Ask user if they want to use the Learning Rate Finder
+            use_lr_finder = get_user_confirmation("Use Learning Rate Finder to determine optimal learning rate? (y/n): ")
+            
+            # Only ask for learning rate if not using the LR finder
+            lr = 0.001  # Default value
+            if not use_lr_finder:
+                lr = float(input("Enter learning rate (default 0.001): ") or "0.001")
+            else:
+                print("Learning rate will be determined automatically by the Learning Rate Finder.")
+            
             weight_decay = float(input("Enter weight decay (default 0.0001): ") or "0.0001")
             
             # Learning rate scheduler options
@@ -331,11 +346,14 @@ def interactive_menu():
                 early_stopping_patience = int(input("Enter patience for early stopping (default 10): ") or "10")
             
             if get_user_confirmation("Start training? (y/n): "):
-                trained_model_name = train_model(
-                    model_type=model_type, 
-                    model_name=model_name, 
-                    batch_size=batch_size, 
-                    epochs=epochs, 
+                # Import the function directly to avoid any shadowing issues
+                from src.training import train_model as training_function
+
+                trained_model_name = training_function(
+                    model_type=model_type,
+                    model_name=model_name,
+                    batch_size=batch_size,
+                    epochs=epochs,
                     lr=lr,
                     weight_decay=weight_decay,
                     scheduler_type=scheduler_type,
@@ -344,7 +362,8 @@ def interactive_menu():
                     clip_grad_norm=clip_grad_norm,
                     early_stopping=early_stopping,
                     early_stopping_patience=early_stopping_patience,
-                    dataset_path=selected_data_dir  # Pass the selected dataset path
+                    dataset_path=selected_data_dir,  # Pass the selected dataset path
+                    use_lr_finder=use_lr_finder  # Add the LR Finder option
                 )
                 print(f"\nModel trained and saved as: {trained_model_name}")
         
@@ -451,6 +470,9 @@ def interactive_menu():
             use_trial0_baseline = get_user_confirmation("Use trial-0 baseline for first trial? (y/n): ")
             keep_checkpoints = int(input("Number of best checkpoints to keep per trial (default 1): ") or "1")
             
+            # Add option for Learning Rate Finder
+            use_lr_finder = get_user_confirmation("Use Learning Rate Finder to determine optimal learning rates? (y/n): ")
+            
             if get_user_confirmation("Start hyperparameter tuning? (y/n): "):
                 try:
                     # Call the run_hyperparameter_tuning function with all options
@@ -460,7 +482,8 @@ def interactive_menu():
                         n_trials=n_trials,
                         timeout=timeout,
                         use_trial0_baseline=use_trial0_baseline,
-                        keep_checkpoints=keep_checkpoints
+                        keep_checkpoints=keep_checkpoints,
+                        use_lr_finder=use_lr_finder
                     )
                     
                     if results:
@@ -470,16 +493,17 @@ def interactive_menu():
                         
                         # Ask if user wants to train a model with these parameters
                         if get_user_confirmation("\nTrain a model with these parameters? (y/n): "):
-                            from .training import train_model
-                            
+                            # Import the function directly to avoid any shadowing issues
+                            from src.training import train_model as training_function
+
                             # Create a good model name
                             model_name = f"{model_type}_tuned_{selected_data_dir.name}"
-                            
+
                             # Set epochs to a reasonable value for full training
                             epochs = int(input(f"Enter number of epochs (default 50): ") or "50")
-                            
+
                             # Train the model with the best parameters
-                            trained_model_name = train_model(
+                            trained_model_name = training_function(
                                 model_type=model_type,
                                 model_name=model_name,
                                 batch_size=results['best_params']['batch_size'],
@@ -489,11 +513,11 @@ def interactive_menu():
                                 scheduler_type=results['best_params'].get('scheduler', 'cosine'),
                                 scheduler_patience=results['best_params'].get('scheduler_patience', 5),
                                 scheduler_factor=results['best_params'].get('scheduler_factor', 0.5),
-                                gradient_clip_val=results['best_params'].get('gradient_clip_val', None),
+                                clip_grad_norm=results['best_params'].get('gradient_clip_val', None),  # Map gradient_clip_val to clip_grad_norm
                                 early_stopping=True,
                                 early_stopping_patience=results['best_params'].get('early_stopping_patience', 10),
                                 dataset_path=selected_data_dir,
-                                dropout=results['best_params'].get('dropout', 0.0)
+                                use_lr_finder=False  # Don't use LR finder since we already have optimal parameters
                             )
                             print(f"\nModel trained and saved as: {trained_model_name}")
                 except Exception as e:

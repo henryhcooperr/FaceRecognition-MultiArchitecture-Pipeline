@@ -29,12 +29,12 @@ project_dir = Path(__file__).resolve().parent.parent
 # Datasets available to download
 DATASETS = {
     "dataset2": {
-        "url": "https://www.kaggle.com/datasets/vishesh1412/celebrity-face-image-dataset",
+        "url": "vishesh1412/celebrity-face-image-dataset",
         "description": "Celebrity Faces Dataset (18 celebrities, 100 images each)",
         "needs_unzip": True
     },
     "dataset1": {
-        "url": "https://www.kaggle.com/datasets/kasikrit/att-database-of-faces",
+        "url": "cybersimar08/face-recognition-dataset",
         "description": "Celebrity Faces Dataset (36 celebrities, 49 images each)",
         "needs_unzip": True
     }
@@ -220,17 +220,19 @@ def download_dataset(dataset_id):
     print(f"URL: {url}")
     
     try:
-        # Download from Kaggle
+        # Download from Kaggle using kagglehub
+        print(f"Downloading dataset using kagglehub: {url}")
+        logger.info(f"Downloading dataset using kagglehub: {url}")
         dataset_path = kagglehub.dataset_download(url)
         logger.info(f"Downloaded to: {dataset_path}")
         print(f"Downloaded to: {dataset_path}")
-        
+
         # Extract dataset to temp directory
         temp_dir = project_dir / f"temp_{dataset_id}"
         if temp_dir.exists():
             shutil.rmtree(temp_dir)
         temp_dir.mkdir()
-        
+
         # Look for zip files to extract
         zip_files = glob.glob(os.path.join(dataset_path, "*.zip"))
         if zip_files:
@@ -244,7 +246,7 @@ def download_dataset(dataset_id):
                     logger.warning(f"Invalid zip file {zip_file}, skipping...")
                     print(f"Warning: Invalid zip file {zip_file}, skipping...")
                     continue
-        
+
         # Copy all files from the dataset directory
         for item in os.listdir(dataset_path):
             src = Path(dataset_path) / item

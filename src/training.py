@@ -22,6 +22,7 @@ SchedulerType = Union[ReduceLROnPlateau, CosineAnnealingLR, StepLR, None]
 from .base_config import PROC_DATA_DIR, CHECKPOINTS_DIR, logger
 from .face_models import get_model, get_criterion
 from .data_utils import SiameseDataset
+from .lr_finder import LearningRateFinder
 
 def plot_confusion_matrix(cm, class_names, output_dir, model_name):
     """
@@ -88,13 +89,100 @@ def plot_learning_curves(train_losses: List[float], val_losses: List[float],
     plt.savefig(save_dir / 'learning_curves.png')
     plt.close()
 
+def find_optimal_lr(model_type: str, dataset_path: Path, batch_size: int = 32,
+                  start_lr: float = 1e-7, end_lr: float = 1.0, num_iterations: int = 100,
+                  model_name: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Find the optimal learning rate for a model using the LR Finder.
+
+    Args:
+        model_type: Type of model (baseline, cnn, siamese, etc.)
+        dataset_path: Path to the processed dataset
+        batch_size: Batch size for the dataloader
+        start_lr: Starting learning rate
+        end_lr: Maximum learning rate to try
+        num_iterations: Number of iterations to run
+        model_name: Optional name of the model (to save results in model directory)
+
+    Returns:
+        Dict containing the analysis results and suggested learning rates
+    """
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Running LR Finder on device: {device}")
+
+    # Setup data transforms
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])
+    ])
+
+    # Load dataset
+    if model_type == 'siamese':
+        train_dataset = SiameseDataset(str(dataset_path / "train"), transform=transform)
+        num_classes = 2
+    else:
+        train_dataset = datasets.ImageFolder(dataset_path / "train", transform=transform)
+        num_classes = len(train_dataset.classes)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+
+    # Initialize model
+    model = get_model(model_type, num_classes=num_classes)
+    model = model.to(device)
+
+    # Setup criterion and optimizer
+    criterion = get_criterion(model_type)
+    optimizer = optim.Adam(model.parameters(), lr=start_lr)
+
+    # Determine where to save LR Finder results
+    if model_name:
+        # If a model name is provided, save only in the model-specific directory
+        output_dir = CHECKPOINTS_DIR / model_name / "plots" / "lr_finder"
+        output_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        # Fall back to common directory only if no model name is provided
+        output_dir = CHECKPOINTS_DIR / "lr_finder" / model_type
+        output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Initialize LR Finder
+    lr_finder = LearningRateFinder(
+        model=model,
+        criterion=criterion,
+        optimizer=optimizer,
+        device=device,
+        start_lr=start_lr,
+        end_lr=end_lr,
+        num_iterations=num_iterations,
+        save_dir=output_dir  # Use the selected output directory
+    )
+
+    # Run LR finder
+    logger.info(f"Running learning rate finder for {model_type} model...")
+    lr_finder.find_lr(train_loader)
+
+    # Save and analyze results to the selected output directory
+    analysis = lr_finder.save_results(output_dir)
+
+    # Log the suggested learning rates
+    for group_idx, group in enumerate(analysis["groups"]):
+        logger.info(f"Group {group_idx} suggested learning rate: {group['suggested_learning_rate']:.2e}")
+
+    # Overall suggestion
+    suggested_lr = analysis["overall"]["suggested_learning_rate"]
+    logger.info(f"Overall suggested learning rate: {suggested_lr:.2e}")
+
+    return analysis
+
 def train_model(model_type: str, model_name: Optional[str] = None,
                 batch_size: int = 32, epochs: int = 50,
                 lr: float = 0.001, weight_decay: float = 1e-4,
                 scheduler_type: str = 'reduce_lr', scheduler_patience: int = 5,
                 scheduler_factor: float = 0.5, clip_grad_norm: Optional[float] = None,
                 early_stopping: bool = False, early_stopping_patience: int = 10,
-                dataset_path: Optional[Path] = None):
+                dataset_path: Optional[Path] = None,
+                use_lr_finder: bool = False):
     """Train a face recognition model with advanced parameters.
     
     Args:
@@ -111,6 +199,7 @@ def train_model(model_type: str, model_name: Optional[str] = None,
         early_stopping: Whether to use early stopping
         early_stopping_patience: Patience for early stopping
         dataset_path: Optional path to the dataset (if None, will prompt for selection)
+        use_lr_finder: Whether to use the learning rate finder to determine the optimal learning rate
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
@@ -164,6 +253,28 @@ def train_model(model_type: str, model_name: Optional[str] = None,
     plots_dir = model_checkpoint_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
     
+    # Use Learning Rate Finder if requested
+    if use_lr_finder:
+        logger.info("Using LR Finder to determine optimal learning rate...")
+        # Pass model_name to save results ONLY in the model directory
+        lr_analysis = find_optimal_lr(
+            model_type=model_type,
+            dataset_path=selected_data_dir,
+            batch_size=batch_size,
+            model_name=model_name  # Pass model name for model-specific saving only
+        )
+        suggested_lr = lr_analysis["overall"]["suggested_learning_rate"]
+        min_lr = lr_analysis["overall"]["min_learning_rate"]
+        max_lr = lr_analysis["overall"]["max_learning_rate"]
+        logger.info(f"LR Finder suggested learning rate: {suggested_lr:.2e}")
+        logger.info(f"LR Finder min learning rate: {min_lr:.2e}")
+        logger.info(f"LR Finder max learning rate: {max_lr:.2e}")
+
+        # Use the suggested learning rate
+        lr = suggested_lr
+
+        # No need to copy files - they're already saved in the model's directory
+    
     # Setup data transforms
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -201,19 +312,48 @@ def train_model(model_type: str, model_name: Optional[str] = None,
     
     # Setup learning rate scheduler
     scheduler: SchedulerType = None  # Type annotation with default value
-    if scheduler_type == 'reduce_lr':
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', patience=scheduler_patience, 
-            factor=scheduler_factor, verbose=True
-        )
-    elif scheduler_type == 'cosine':
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=epochs, eta_min=lr/100, verbose=True
-        )
-    elif scheduler_type == 'step':
-        scheduler = optim.lr_scheduler.StepLR(
-            optimizer, step_size=scheduler_patience, gamma=scheduler_factor, verbose=True
-        )
+
+    # For LR finder, we use the output values to set appropriate scheduler parameters
+    if use_lr_finder and 'min_lr' in locals() and 'max_lr' in locals():
+        # We have LR finder results we can use
+        if scheduler_type == 'reduce_lr':
+            # ReduceLROnPlateau: Use LR finder min_lr as the floor
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', patience=scheduler_patience,
+                factor=scheduler_factor, min_lr=min_lr
+            )
+            logger.info(f"Using ReduceLROnPlateau scheduler with min_lr={min_lr:.2e}")
+        elif scheduler_type == 'cosine':
+            # CosineAnnealingLR: Use LR finder min_lr as eta_min
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=epochs, eta_min=min_lr
+            )
+            logger.info(f"Using CosineAnnealingLR scheduler with eta_min={min_lr:.2e}")
+        elif scheduler_type == 'step':
+            # Keep traditional step scheduler but log the details
+            scheduler = optim.lr_scheduler.StepLR(
+                optimizer, step_size=scheduler_patience, gamma=scheduler_factor
+            )
+            logger.info(f"Using StepLR scheduler: LR will decrease from {lr:.2e} by factor {scheduler_factor} every {scheduler_patience} epochs")
+            logger.info(f"After {scheduler_patience} epochs, LR will be {lr * scheduler_factor:.2e}")
+    else:
+        # Standard scheduler setup without LR finder
+        if scheduler_type == 'reduce_lr':
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', patience=scheduler_patience,
+                factor=scheduler_factor
+            )
+            logger.info(f"Using ReduceLROnPlateau scheduler")
+        elif scheduler_type == 'cosine':
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=epochs, eta_min=lr/100
+            )
+            logger.info(f"Using CosineAnnealingLR scheduler with eta_min={lr/100:.2e}")
+        elif scheduler_type == 'step':
+            scheduler = optim.lr_scheduler.StepLR(
+                optimizer, step_size=scheduler_patience, gamma=scheduler_factor
+            )
+            logger.info(f"Using StepLR scheduler with step={scheduler_patience}, gamma={scheduler_factor}")
     
     # Training loop
     train_losses = []
@@ -425,10 +565,22 @@ def train_model(model_type: str, model_name: Optional[str] = None,
             "learning_rate": lr,
             "weight_decay": weight_decay,
             "scheduler": scheduler_type,
+            "scheduler_patience": scheduler_patience,
+            "scheduler_factor": scheduler_factor,
             "gradient_clipping": clip_grad_norm,
             "early_stopping": early_stopping,
+            "early_stopping_patience": early_stopping_patience if early_stopping else None,
+            "used_lr_finder": use_lr_finder
         }
     }
+
+    # Add LR finder results if they were used
+    if use_lr_finder and 'lr_analysis' in locals():
+        test_results["lr_finder"] = {
+            "suggested_lr": lr_analysis["overall"]["suggested_learning_rate"],
+            "min_lr": lr_analysis["overall"]["min_learning_rate"],
+            "max_lr": lr_analysis["overall"]["max_learning_rate"]
+        }
     
     with open(model_checkpoint_dir / "test_results.json", "w") as f:
         import json

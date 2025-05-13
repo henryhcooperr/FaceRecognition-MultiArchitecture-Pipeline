@@ -184,17 +184,18 @@ def visualize_preprocessing_steps(image_path: str, config: PreprocessingConfig, 
             logger.error(f"Could not read image: {image_path}")
             return None
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        
+
         # Create figure for visualization
         import matplotlib.pyplot as plt
         fig, axes = plt.subplots(2, 3, figsize=(15, 10))
         fig.suptitle('Preprocessing Steps', fontsize=16)
-        
+
         # Original image
         axes[0, 0].imshow(image)
         axes[0, 0].set_title('Original Image')
         axes[0, 0].axis('off')
-        
+
+        # Process differently based on whether MTCNN is used
         if config.use_mtcnn:
             # Initialize MTCNN
             mtcnn = MTCNN(
@@ -204,115 +205,150 @@ def visualize_preprocessing_steps(image_path: str, config: PreprocessingConfig, 
                 thresholds=config.thresholds,
                 device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             )
-            
+
             # Detect face and get landmarks
             boxes, probs, landmarks = mtcnn.detect(image, landmarks=True)
-            
+
             if boxes is None or len(boxes) == 0:
                 logger.warning(f"No face detected in {image_path}")
                 return None
-            
+
             # Use the face with highest probability
             box = boxes[0]
             landmark = landmarks[0]
-            
+
             # Draw bounding box and landmarks on original image
             img_with_boxes = image.copy()
             x1, y1, x2, y2 = map(int, box)
             cv2.rectangle(img_with_boxes, (x1, y1), (x2, y2), (0, 255, 0), 2)
             for point in landmark:
                 cv2.circle(img_with_boxes, (int(point[0]), int(point[1])), 2, (0, 0, 255), -1)
-            
+
             axes[0, 1].imshow(img_with_boxes)
             axes[0, 1].set_title('Face Detection with Landmarks')
             axes[0, 1].axis('off')
-            
+
             # Get face bbox with margin
             bbox = get_face_bbox_with_margin(box, config.face_margin, image.shape)
-            
+
             # Align face using landmarks
             aligned_face = align_face(image, landmark)
-            
+
             # Draw aligned face with bounding box
             aligned_with_box = aligned_face.copy()
             x1, y1, x2, y2 = map(int, bbox)
             cv2.rectangle(aligned_with_box, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            
+
             axes[0, 2].imshow(aligned_with_box)
             axes[0, 2].set_title('Aligned Face with Margin')
             axes[0, 2].axis('off')
-            
+
             # Final cropped and resized face
-            face = aligned_face[int(bbox[1]):int(bbox[3]), 
+            face = aligned_face[int(bbox[1]):int(bbox[3]),
                               int(bbox[0]):int(bbox[2])]
             face = cv2.resize(face, config.final_size)
-            
+
             axes[1, 0].imshow(face)
             axes[1, 0].set_title('Final Processed Face')
             axes[1, 0].axis('off')
-            
-            if config.augmentation:
-                # Define augmentation pipeline
-                transform = A.Compose([
-                    A.Rotate(limit=config.aug_rotation_range, p=1.0),
-                    A.RandomBrightnessContrast(
-                        brightness_limit=config.aug_brightness_range,
-                        contrast_limit=config.aug_contrast_range,
-                        p=1.0
-                    ),
-                    A.RandomScale(scale_limit=config.aug_scale_range, p=1.0),
-                    A.HorizontalFlip(p=1.0 if config.horizontal_flip else 0),
-                ])
-                
-                # Apply augmentations
-                augmented = transform(image=face)
-                augmented_face = augmented['image']
-                
-                # Show different augmentations
-                axes[1, 1].imshow(augmented_face)
-                axes[1, 1].set_title('Augmented Face')
-                axes[1, 1].axis('off')
-                
-                # Show another augmentation with different parameters
-                transform2 = A.Compose([
-                    A.Rotate(limit=config.aug_rotation_range, p=1.0),
-                    A.RandomBrightnessContrast(
-                        brightness_limit=config.aug_brightness_range,
-                        contrast_limit=config.aug_contrast_range,
-                        p=1.0
-                    ),
-                    A.RandomScale(scale_limit=config.aug_scale_range, p=1.0),
-                    A.HorizontalFlip(p=1.0 if config.horizontal_flip else 0),
-                ])
-                
-                augmented2 = transform2(image=face)
-                augmented_face2 = augmented2['image']
-                
-                axes[1, 2].imshow(augmented_face2)
-                axes[1, 2].set_title('Another Augmentation')
-                axes[1, 2].axis('off')
-                
-                # Show augmentation parameters
-                params_text = f"Augmentation Parameters:\n"
-                params_text += f"Rotation Range: ±{config.aug_rotation_range}°\n"
-                params_text += f"Brightness Range: ±{config.aug_brightness_range}\n"
-                params_text += f"Contrast Range: ±{config.aug_contrast_range}\n"
-                params_text += f"Scale Range: ±{config.aug_scale_range}\n"
-                params_text += f"Horizontal Flip: {config.horizontal_flip}"
-                
-                # Add text box with parameters
-                plt.figtext(0.02, 0.02, params_text, fontsize=10, 
-                           bbox=dict(facecolor='white', alpha=0.8))
-            
-            # Save visualization
-            plt.tight_layout()
-            plt.savefig(output_dir / f'preprocessing_{Path(image_path).stem}.png')
-            plt.close()
-            
-            return face
-        
-        return image
-    
+        else:
+            # Without MTCNN, just resize the image
+            # Show original with gridlines to indicate resizing
+            img_grid = image.copy()
+            h, w = img_grid.shape[:2]
+            # Draw grid lines
+            for i in range(0, w, w//10):
+                cv2.line(img_grid, (i, 0), (i, h), (0, 255, 0), 1)
+            for i in range(0, h, h//10):
+                cv2.line(img_grid, (0, i), (w, i), (0, 255, 0), 1)
+
+            axes[0, 1].imshow(img_grid)
+            axes[0, 1].set_title('Original with Grid')
+            axes[0, 1].axis('off')
+
+            # Just resize without face detection
+            face = cv2.resize(image, config.final_size)
+
+            axes[0, 2].imshow(face)
+            axes[0, 2].set_title('Simple Resize')
+            axes[0, 2].axis('off')
+
+            # Show final processed image
+            axes[1, 0].imshow(face)
+            axes[1, 0].set_title('Final Processed Image')
+            axes[1, 0].axis('off')
+
+        # Handle augmentation visualization for both MTCNN and non-MTCNN modes
+        if config.augmentation:
+            # Define augmentation pipeline
+            transform = A.Compose([
+                A.Rotate(limit=config.aug_rotation_range, p=1.0),
+                A.RandomBrightnessContrast(
+                    brightness_limit=config.aug_brightness_range,
+                    contrast_limit=config.aug_contrast_range,
+                    p=1.0
+                ),
+                A.RandomScale(scale_limit=config.aug_scale_range, p=1.0),
+                A.HorizontalFlip(p=1.0 if config.horizontal_flip else 0),
+            ])
+
+            # Apply augmentations
+            augmented = transform(image=face)
+            augmented_face = augmented['image']
+
+            # Show different augmentations
+            axes[1, 1].imshow(augmented_face)
+            axes[1, 1].set_title('Augmented Image')
+            axes[1, 1].axis('off')
+
+            # Show another augmentation with different parameters
+            transform2 = A.Compose([
+                A.Rotate(limit=config.aug_rotation_range, p=1.0),
+                A.RandomBrightnessContrast(
+                    brightness_limit=config.aug_brightness_range,
+                    contrast_limit=config.aug_contrast_range,
+                    p=1.0
+                ),
+                A.RandomScale(scale_limit=config.aug_scale_range, p=1.0),
+                A.HorizontalFlip(p=1.0 if config.horizontal_flip else 0),
+            ])
+
+            augmented2 = transform2(image=face)
+            augmented_face2 = augmented2['image']
+
+            axes[1, 2].imshow(augmented_face2)
+            axes[1, 2].set_title('Another Augmentation')
+            axes[1, 2].axis('off')
+
+            # Show augmentation parameters
+            params_text = f"Augmentation Parameters:\n"
+            params_text += f"Rotation Range: ±{config.aug_rotation_range}°\n"
+            params_text += f"Brightness Range: ±{config.aug_brightness_range}\n"
+            params_text += f"Contrast Range: ±{config.aug_contrast_range}\n"
+            params_text += f"Scale Range: ±{config.aug_scale_range}\n"
+            params_text += f"Horizontal Flip: {config.horizontal_flip}"
+
+            # Add text box with parameters
+            plt.figtext(0.02, 0.02, params_text, fontsize=10,
+                       bbox=dict(facecolor='white', alpha=0.8))
+        else:
+            # Display a message when augmentation is disabled
+            for ax in [axes[1, 1], axes[1, 2]]:
+                ax.text(0.5, 0.5, 'Augmentation Disabled',
+                      horizontalalignment='center',
+                      verticalalignment='center',
+                      transform=ax.transAxes,
+                      fontsize=14)
+                ax.set_title('No Augmentation')
+                ax.axis('off')
+
+        # Always save visualization, regardless of MTCNN setting
+        plt.tight_layout()
+        plt.savefig(output_dir / f'preprocessing_{Path(image_path).stem}.png')
+        plt.close()
+
+        return face
+
     except Exception as e:
         logger.error(f"Error visualizing preprocessing for {image_path}: {str(e)}")
         return None

@@ -20,6 +20,7 @@ import logging
 from .base_config import PROC_DATA_DIR, CHECKPOINTS_DIR, logger, OUT_DIR
 from .face_models import get_model, get_criterion
 from .data_utils import SiameseDataset
+from .lr_finder import LearningRateFinder
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -35,17 +36,38 @@ HYPEROPT_DIR.mkdir(parents=True, exist_ok=True)
 # Define trial-0 baselines (good starting points)
 TRIAL0_BASELINES = {
     "hybrid": {
-        "epochs": 50, "batch_size": 32, "learning_rate": 3e-4, 
+        "epochs": 50, "batch_size": 32, "learning_rate": 3e-4,
         "weight_decay": 1e-4, "dropout": 0.3, "scheduler": "cosine"
     },
     "arcface": {
-        "epochs": 60, "batch_size": 128, "learning_rate": 1e-4, 
+        "epochs": 60, "batch_size": 128, "learning_rate": 1e-4,
         "weight_decay": 5e-5, "dropout": 0.2, "scheduler": "cosine",
         "arcface_margin": 0.45, "arcface_scale": 48
     },
     "cnn": {
-        "epochs": 40, "batch_size": 64, "learning_rate": 1e-3, 
+        "epochs": 40, "batch_size": 64, "learning_rate": 1e-3,
         "weight_decay": 1e-5, "dropout": 0.35, "scheduler": "onecycle"
+    },
+    # Adding baselines for the remaining model types
+    "baseline": {
+        "epochs": 30, "batch_size": 32, "learning_rate": 5e-3,
+        "weight_decay": 1e-4, "dropout": 0.5, "scheduler": "reduce_lr",
+        "scheduler_patience": 5, "scheduler_factor": 0.5
+    },
+    "siamese": {
+        "epochs": 45, "batch_size": 32, "learning_rate": 2e-4,
+        "weight_decay": 1e-4, "dropout": 0.3, "scheduler": "cosine",
+        "margin": 2.0  # Contrastive loss margin
+    },
+    "attention": {
+        "epochs": 40, "batch_size": 48, "learning_rate": 5e-4,
+        "weight_decay": 2e-4, "dropout": 0.25, "scheduler": "cosine",
+        "num_heads": 2, "reduction_ratio": 8
+    },
+    "ensemble": {
+        "epochs": 30, "batch_size": 32, "learning_rate": 8e-4,
+        "weight_decay": 1e-4, "dropout": 0.2, "scheduler": "cosine",
+        "ensemble_method": "weighted"  # Use weighted ensemble method
     }
 }
 
@@ -145,12 +167,83 @@ def get_scheduler(optimizer: torch.optim.Optimizer, params: Dict[str, Any], epoc
     else:
         return None
 
+def find_optimal_lr_for_trial(model_type: str, dataset_path: Path, batch_size: int = 32) -> float:
+    """
+    Find the optimal learning rate for a specific trial.
+    
+    Args:
+        model_type: Type of model (baseline, cnn, siamese, etc.)
+        dataset_path: Path to the processed dataset
+        batch_size: Batch size for the dataloader
+        
+    Returns:
+        Suggested learning rate
+    """
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Running LR Finder for trial on device: {device}")
+    
+    # Setup data transforms
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])
+    ])
+    
+    # Load dataset
+    if model_type == 'siamese':
+        train_dataset = SiameseDataset(str(dataset_path / "train"), transform=transform)
+        num_classes = 2
+    else:
+        train_dataset = datasets.ImageFolder(dataset_path / "train", transform=transform)
+        num_classes = len(train_dataset.classes)
+    
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    
+    # Initialize model
+    model = get_model(model_type, num_classes=num_classes)
+    model = model.to(device)
+    
+    # Setup criterion and optimizer
+    criterion = get_criterion(model_type)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-7)
+    
+    # Create output directory
+    output_dir = HYPEROPT_DIR / "lr_finder" / model_type
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Initialize LR Finder with fewer iterations for hyperparameter tuning
+    lr_finder = LearningRateFinder(
+        model=model,
+        criterion=criterion,
+        optimizer=optimizer,
+        device=device,
+        start_lr=1e-7,
+        end_lr=1.0,
+        num_iterations=50,  # Fewer iterations for speed in hyperparameter tuning
+        save_dir=output_dir
+    )
+    
+    # Run LR finder
+    logger.info(f"Running learning rate finder for trial with {model_type} model...")
+    lr_finder.find_lr(train_loader)
+    
+    # Analyze results
+    analysis = lr_finder._analyze_results()
+    
+    # Get suggested learning rate
+    suggested_lr = analysis["overall"]["suggested_learning_rate"]
+    logger.info(f"LR Finder suggested learning rate for trial: {suggested_lr:.2e}")
+    
+    return suggested_lr
+
 def run_hyperparameter_tuning(model_type: Optional[str] = None, 
                              dataset_path: Optional[Path] = None,
                              n_trials: int = 20,
                              timeout: Optional[int] = None,
                              use_trial0_baseline: bool = True,
-                             keep_checkpoints: int = 1) -> Optional[Dict[str, Any]]:
+                             keep_checkpoints: int = 1,
+                             use_lr_finder: bool = False) -> Optional[Dict[str, Any]]:
     """Run hyperparameter tuning for a model.
     
     Args:
@@ -160,6 +253,7 @@ def run_hyperparameter_tuning(model_type: Optional[str] = None,
         timeout: Optional timeout in seconds for the entire optimization
         use_trial0_baseline: Whether to use trial-0 baseline for first trial
         keep_checkpoints: Number of best checkpoints to keep per trial
+        use_lr_finder: Whether to use LR Finder to determine optimal learning rates for each trial
         
     Returns:
         Dictionary containing best parameters and results, or None if tuning fails
@@ -226,6 +320,8 @@ def run_hyperparameter_tuning(model_type: Optional[str] = None,
     print(f"\nRunning hyperparameter tuning for {model_type} on {dataset_path.name} with {n_trials} trials")
     if use_trial0_baseline:
         print("Using trial-0 baseline for first trial")
+    if use_lr_finder:
+        print("Using Learning Rate Finder to determine optimal learning rates for each trial")
     
     # Setup output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -271,7 +367,7 @@ def run_hyperparameter_tuning(model_type: Optional[str] = None,
     
     # Run optimization
     study.optimize(
-        lambda trial: objective(trial, model_type, dataset_path, use_trial0_baseline),
+        lambda trial: objective(trial, model_type, dataset_path, use_trial0_baseline, use_lr_finder),
         n_trials=n_trials,
         timeout=timeout
     )
@@ -370,7 +466,8 @@ def create_search_space():
         'early_stopping_patience': [5, 10, 15, 20]
     }
 
-def objective(trial: optuna.Trial, model_type: str, dataset_path: Path, use_trial0_baseline: bool) -> float:
+def objective(trial: optuna.Trial, model_type: str, dataset_path: Path, 
+            use_trial0_baseline: bool, use_lr_finder: bool = False) -> float:
     """Objective function for hyperparameter optimization.
     
     Args:
@@ -378,6 +475,7 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path, use_tria
         model_type: Type of model to tune
         dataset_path: Path to the dataset
         use_trial0_baseline: Whether to use trial-0 baseline
+        use_lr_finder: Whether to use the LR Finder to determine optimal learning rate
         
     Returns:
         Validation accuracy for the trial
@@ -395,7 +493,22 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path, use_tria
     
     # Sample hyperparameters
     params['batch_size'] = trial.suggest_categorical('batch_size', [8, 16, 32, 64, 128])
-    params['learning_rate'] = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
+    
+    # Use LR Finder to determine optimal learning rate if enabled
+    if use_lr_finder:
+        try:
+            optimal_lr = find_optimal_lr_for_trial(model_type, dataset_path, params['batch_size'])
+            # Use the suggested learning rate with some randomization for exploration
+            min_lr = optimal_lr / 3
+            max_lr = optimal_lr * 3
+            params['learning_rate'] = trial.suggest_float('learning_rate', min_lr, max_lr, log=True)
+            logger.info(f"Using LR Finder suggested range: {min_lr:.2e} to {max_lr:.2e}")
+        except Exception as e:
+            logger.warning(f"LR Finder failed: {e}. Falling back to default range.")
+            params['learning_rate'] = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
+    else:
+        params['learning_rate'] = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
+    
     params['weight_decay'] = trial.suggest_float('weight_decay', 1e-5, 1e-3, log=True)
     params['optimizer'] = trial.suggest_categorical('optimizer', ['AdamW', 'RAdam', 'SGD_momentum'])
     params['scheduler'] = trial.suggest_categorical('scheduler', ['cosine', 'onecycle', 'plateau'])
