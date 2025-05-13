@@ -10,11 +10,134 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union, Any
 from sklearn.metrics import precision_recall_fscore_support, confusion_matrix, roc_curve, auc
+from sklearn.metrics import precision_score, recall_score, f1_score
 from collections import defaultdict
 import seaborn as sns
 from matplotlib.colors import LinearSegmentedColormap
 
 from .base_config import logger
+
+def plot_confusion_matrix(y_true: Union[np.ndarray, List], 
+                         y_pred: Union[np.ndarray, List, None] = None, 
+                         classes: List[str] = None,
+                         output_dir: Union[str, Path] = None,
+                         model_name: Optional[str] = None,
+                         cm: Optional[np.ndarray] = None,
+                         detailed: bool = False,
+                         normalize: bool = False,
+                         cmap: str = 'Blues',
+                         title: str = 'Confusion Matrix'):
+    """
+    Comprehensive function to plot confusion matrix with optional per-class metrics.
+    
+    Args:
+        y_true: Array of true labels or confusion matrix if y_pred is None
+        y_pred: Array of predicted labels (optional if cm is provided)
+        classes: List of class names
+        output_dir: Directory to save the plot
+        model_name: Name of the model (for filename)
+        cm: Pre-computed confusion matrix (optional)
+        detailed: Whether to create additional per-class metrics plot
+        normalize: Whether to normalize the confusion matrix
+        cmap: Colormap for the heatmap
+        title: Title for the plot
+    
+    Returns:
+        Path to saved plot file
+    """
+    # Verify we have enough information to proceed
+    if cm is None and y_pred is None:
+        raise ValueError("Either confusion matrix (cm) or predictions (y_pred) must be provided")
+    
+    # If cm is not provided, compute it from predictions
+    if cm is None:
+        cm = confusion_matrix(y_true, y_pred)
+    
+    # Normalize if requested
+    if normalize:
+        cm_plot = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+        fmt = '.2f'
+    else:
+        cm_plot = cm
+        fmt = 'd'
+    
+    # Create figure for confusion matrix
+    plt.figure(figsize=(10, 8))
+    
+    # Plot confusion matrix as heatmap
+    sns.heatmap(cm_plot, annot=True, fmt=fmt, cmap=plt.cm.get_cmap(cmap),
+               xticklabels=classes, yticklabels=classes)
+    
+    # Add title and labels
+    plt.title(title)
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    
+    # Add text annotations with improved contrast
+    thresh = cm_plot.max() / 2.
+    for i in range(cm_plot.shape[0]):
+        for j in range(cm_plot.shape[1]):
+            plt.text(j + 0.5, i + 0.5, format(cm_plot[i, j], fmt),
+                    ha="center", va="center",
+                    color="white" if cm_plot[i, j] > thresh else "black")
+    
+    plt.tight_layout()
+    
+    # Create the output directory structure
+    if output_dir is not None:
+        save_dir = Path(output_dir)
+        if model_name:
+            # Standard directory structure: output_dir/plots/model_name/
+            plots_dir = save_dir / "plots"
+            if not plots_dir.exists():
+                plots_dir.mkdir(parents=True, exist_ok=True)
+            
+            save_dir = plots_dir / model_name
+            if not save_dir.exists():
+                save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save confusion matrix plot
+        cm_path = save_dir / 'confusion_matrix.png'
+        plt.savefig(cm_path)
+        logger.info(f"Saved confusion matrix to {cm_path}")
+        plt.close()
+        
+        # If requested, generate additional per-class metrics
+        if detailed and y_pred is not None and classes is not None:
+            # Compute metrics per class
+            precision = precision_score(y_true, y_pred, average=None, zero_division=0)
+            recall = recall_score(y_true, y_pred, average=None, zero_division=0)
+            f1 = f1_score(y_true, y_pred, average=None, zero_division=0)
+            
+            # Create metrics dataframe
+            metrics_df = pd.DataFrame({
+                'Precision': precision,
+                'Recall': recall,
+                'F1-Score': f1
+            }, index=classes)
+            
+            # Plot per-class metrics
+            plt.figure(figsize=(12, 6))
+            metrics_df.plot(kind='bar')
+            plt.title('Per-Class Performance Metrics')
+            plt.xlabel('Class')
+            plt.ylabel('Score')
+            plt.xticks(rotation=45, ha='right')
+            plt.tight_layout()
+            
+            # Save per-class metrics plot
+            metrics_path = save_dir / 'per_class_metrics.png'
+            plt.savefig(metrics_path)
+            logger.info(f"Saved per-class metrics to {metrics_path}")
+            plt.close()
+            
+            return cm_path, metrics_path
+        
+        return cm_path
+    else:
+        # Just display the plot if no output directory is provided
+        plt.show()
+        return None
 
 def calculate_per_class_metrics(y_true: np.ndarray, y_pred: np.ndarray, 
                                y_score: np.ndarray, class_names: List[str]) -> Dict[str, Dict[str, float]]:
@@ -41,8 +164,6 @@ def calculate_per_class_metrics(y_true: np.ndarray, y_pred: np.ndarray,
         if i >= len(precision):
             continue
             
-        # Get ROC AUC - this took me forever to get right ugh
-        # Create binary labels for this class
         true_bin = (np.array(y_true) == i).astype(int)
         
         try:

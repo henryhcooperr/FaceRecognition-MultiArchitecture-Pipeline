@@ -80,15 +80,15 @@ def interactive_menu():
         sys.exit(0)
     
     while True:
-        print("\nFace Recognition System")
+        print("\nMain Menu:")
         print("1. Process Raw Data")
         print("2. Visualize Preprocessing")
         print("3. Train Model")
         print("4. Evaluate Model")
-        print("5. Tune Hyperparameters")
+        print("5. Hyperparameter Tuning")
         print("6. Cross-Validation")
-        print("7. List Processed Datasets")
-        print("8. List Trained Models")
+        print("7. Compare All Models")
+        print("8. Download Datasets")
         print("9. Exit")
         
         choice = input("\nEnter your choice (1-9): ")
@@ -123,8 +123,16 @@ def interactive_menu():
                 continue
             
             config = get_preprocessing_config()
+            
+            # Add option to limit samples per class
+            limit_samples = get_user_confirmation("Do you want to limit the number of samples per class? (y/n): ")
+            max_samples_per_class = None
+            if limit_samples:
+                max_samples_per_class = int(input("Enter maximum number of samples per class: "))
+                print(f"Will limit to {max_samples_per_class} samples per class")
+            
             if get_user_confirmation("Start processing? (y/n): "):
-                processed_dir = process_raw_data(RAW_DATA_DIR, PROC_DATA_DIR, config)
+                processed_dir = process_raw_data(RAW_DATA_DIR, PROC_DATA_DIR, config, max_samples_per_class=max_samples_per_class)
                 print(f"\nProcessed data saved in: {processed_dir}")
         
         elif choice == '2':
@@ -284,18 +292,29 @@ def interactive_menu():
             for i, (dir_path, display_name) in enumerate(processed_dirs, 1):
                 print(f"{i}. {display_name}")
             
-            selected_data_dir = None
-            while True:
-                dataset_choice = input("\nEnter dataset number to use for training: ")
+            selected_data_dirs = []
+            while not selected_data_dirs:
+                dataset_choice = input("\nEnter dataset number(s) to use for training (comma-separated for multiple): ")
                 try:
-                    dataset_idx = int(dataset_choice) - 1
-                    if 0 <= dataset_idx < len(processed_dirs):
-                        selected_data_dir = processed_dirs[dataset_idx][0]  # Get the path part
-                        break
+                    # Handle comma-separated choices
+                    if "," in dataset_choice:
+                        indices = [int(idx.strip()) - 1 for idx in dataset_choice.split(",")]
+                        for idx in indices:
+                            if 0 <= idx < len(processed_dirs):
+                                selected_data_dirs.append(processed_dirs[idx][0])
+                            else:
+                                print(f"Invalid choice: {idx+1}. Please try again.")
+                                selected_data_dirs = []
+                                break
                     else:
-                        print("Invalid choice. Please try again.")
+                        # Handle single choice
+                        dataset_idx = int(dataset_choice) - 1
+                        if 0 <= dataset_idx < len(processed_dirs):
+                            selected_data_dirs.append(processed_dirs[dataset_idx][0])
+                        else:
+                            print("Invalid choice. Please try again.")
                 except ValueError:
-                    print("Please enter a valid number.")
+                    print("Please enter valid number(s).")
             
             model_name = input("Enter model name (optional, press Enter for automatic versioning): ")
             if not model_name:
@@ -362,7 +381,7 @@ def interactive_menu():
                     clip_grad_norm=clip_grad_norm,
                     early_stopping=early_stopping,
                     early_stopping_patience=early_stopping_patience,
-                    dataset_path=selected_data_dir,  # Pass the selected dataset path
+                    dataset_path=selected_data_dirs,  # Pass the list of selected dataset paths
                     use_lr_finder=use_lr_finder  # Add the LR Finder option
                 )
                 print(f"\nModel trained and saved as: {trained_model_name}")
@@ -450,6 +469,7 @@ def interactive_menu():
             for i, (dir_path, display_name) in enumerate(processed_dirs, 1):
                 print(f"{i}. {display_name}")
             
+            selected_data_dir = None
             while True:
                 dataset_choice = input("\nEnter dataset number to use for tuning: ")
                 try:
@@ -473,6 +493,20 @@ def interactive_menu():
             # Add option for Learning Rate Finder
             use_lr_finder = get_user_confirmation("Use Learning Rate Finder to determine optimal learning rates? (y/n): ")
             
+            # Add option to specify optimizer
+            print("\nSelect optimizer type:")
+            print("1. AdamW (Default)")
+            print("2. RAdam")
+            print("3. SGD with momentum")
+            optimizer_choice = input("Enter choice (1-3, default 1): ") or "1"
+            optimizer_type = None
+            if optimizer_choice == "1":
+                optimizer_type = "AdamW"
+            elif optimizer_choice == "2":
+                optimizer_type = "RAdam"
+            elif optimizer_choice == "3":
+                optimizer_type = "SGD_momentum"
+            
             if get_user_confirmation("Start hyperparameter tuning? (y/n): "):
                 try:
                     # Call the run_hyperparameter_tuning function with all options
@@ -483,7 +517,8 @@ def interactive_menu():
                         timeout=timeout,
                         use_trial0_baseline=use_trial0_baseline,
                         keep_checkpoints=keep_checkpoints,
-                        use_lr_finder=use_lr_finder
+                        use_lr_finder=use_lr_finder,
+                        optimizer_type=optimizer_type
                     )
                     
                     if results:
@@ -517,7 +552,8 @@ def interactive_menu():
                                 early_stopping=True,
                                 early_stopping_patience=results['best_params'].get('early_stopping_patience', 10),
                                 dataset_path=selected_data_dir,
-                                use_lr_finder=False  # Don't use LR finder since we already have optimal parameters
+                                use_lr_finder=False,  # Don't use LR finder since we already have optimal parameters
+                                optimizer_type=optimizer_type
                             )
                             print(f"\nModel trained and saved as: {trained_model_name}")
                 except Exception as e:
@@ -626,9 +662,9 @@ def interactive_menu():
                     print(f"Error during cross-validation: {str(e)}")
         
         elif choice == '7':
-            print("\nProcessed Datasets:")
+            print("\nCompare All Models")
             
-            # Look for processed datasets with various structures
+            # List available processed datasets
             processed_dirs = []
             dataset_names = set()  # For deduplication
             
@@ -656,31 +692,109 @@ def interactive_menu():
                     dataset_names.add("root")
             
             if not processed_dirs:
-                print("No processed datasets found")
-            else:
-                for dir_path, display_name in processed_dirs:
-                    print(f"- {display_name}")
-                    # Try to load and display config info
-                    config_file = dir_path / "preprocessing_config.json"
-                    if config_file.exists():
-                        try:
-                            with open(config_file) as f:
-                                config = json.load(f)
-                            print(f"   - MTCNN: {config.get('use_mtcnn', 'N/A')}")
-                            print(f"   - Face Margin: {config.get('face_margin', 'N/A')}")
-                            print(f"   - Image Size: {config.get('final_size', 'N/A')}")
-                        except:
-                            pass
+                print("No processed datasets found. Please process raw data first.")
+                continue
+            
+            print("\nAvailable processed datasets:")
+            for i, (dir_path, display_name) in enumerate(processed_dirs, 1):
+                print(f"{i}. {display_name}")
+            
+            selected_data_dir = None
+            while True:
+                dataset_choice = input("\nEnter dataset number to use for model comparison: ")
+                try:
+                    dataset_idx = int(dataset_choice) - 1
+                    if 0 <= dataset_idx < len(processed_dirs):
+                        selected_data_dir = processed_dirs[dataset_idx][0]  # Get the path part
+                        selected_dataset_name = processed_dirs[dataset_idx][1]  # Get the display name
+                        break
+                    else:
+                        print("Invalid choice. Please try again.")
+                except ValueError:
+                    print("Please enter a valid number.")
+                    
+            # Train and evaluate all model types on the selected dataset
+            if get_user_confirmation(f"This will train and evaluate all model types on the '{selected_dataset_name}' dataset. Continue? (y/n): "):
+                # Basic parameters for all models
+                epochs = int(input("Enter number of epochs (default 30): ") or "30")
+                batch_size = int(input("Enter batch size (default 32): ") or "32")
+                lr = float(input("Enter learning rate (default 0.001): ") or "0.001")
+                weight_decay = float(input("Enter weight decay (default 0.0001): ") or "0.0001")
+                
+                # Import the needed functions
+                from src.training import train_model as training_function
+                from src.testing import evaluate_model as evaluation_function
+                
+                results = {}
+                
+                for model_type in MODEL_TYPES:
+                    print(f"\n{'-'*40}")
+                    print(f"Training and evaluating {model_type.upper()} model")
+                    print(f"{'-'*40}")
+                    
+                    # Skip ensemble model if this is the first run (need other models first)
+                    if model_type == 'ensemble' and len(results) == 0:
+                        print("Skipping ensemble model as it requires other models to be trained first")
+                        continue
+                    
+                    try:
+                        # Create a specific model name for this comparison run
+                        model_name = f"{model_type}_{selected_dataset_name}_comparison"
+                        
+                        # Train the model
+                        print(f"\nTraining {model_type} model...")
+                        trained_model_name = training_function(
+                            model_type=model_type,
+                            model_name=model_name,
+                            batch_size=batch_size,
+                            epochs=epochs,
+                            lr=lr,
+                            weight_decay=weight_decay,
+                            scheduler_type='cosine',
+                            early_stopping=True,
+                            early_stopping_patience=10,
+                            dataset_path=selected_data_dir
+                        )
+                        
+                        print(f"\nEvaluating {model_type} model...")
+                        metrics = evaluation_function(model_type, trained_model_name, auto_dataset=True)
+                        
+                        results[model_type] = metrics
+                        print(f"\n{model_type.upper()} Results:")
+                        print(f"Accuracy: {metrics['accuracy']*100:.2f}%")
+                        print(f"Precision: {metrics['precision']:.4f}")
+                        print(f"Recall: {metrics['recall']:.4f}")
+                        print(f"F1 Score: {metrics['f1']:.4f}")
+                        print(f"Inference Time: {metrics['inference_time']*1000:.2f} ms")
+                        
+                    except Exception as e:
+                        print(f"Error with {model_type} model: {str(e)}")
+                        results[model_type] = {"error": str(e)}
+                
+                # Display summary of results
+                print(f"\n{'-'*60}")
+                print(f"COMPARISON SUMMARY FOR {selected_dataset_name.upper()}")
+                print(f"{'-'*60}")
+                
+                # Create a table header
+                print(f"{'Model Type':<15} {'Accuracy':<10} {'Precision':<10} {'Recall':<10} {'F1 Score':<10} {'Inference (ms)':<15}")
+                print(f"{'-'*15} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*15}")
+                
+                # Print each model's results
+                for model_type, metrics in results.items():
+                    if "error" not in metrics:
+                        acc = f"{metrics['accuracy']*100:.2f}%"
+                        prec = f"{metrics['precision']:.4f}"
+                        rec = f"{metrics['recall']:.4f}"
+                        f1 = f"{metrics['f1']:.4f}"
+                        inf = f"{metrics['inference_time']*1000:.2f}"
+                        print(f"{model_type:<15} {acc:<10} {prec:<10} {rec:<10} {f1:<10} {inf:<15}")
+                    else:
+                        print(f"{model_type:<15} ERROR: {metrics['error']}")
         
         elif choice == '8':
-            print("\nTrained Models:")
-            model_dirs = list(CHECKPOINTS_DIR.glob('*'))
-            if not model_dirs:
-                print("No trained models found")
-            else:
-                for model_dir in sorted(model_dirs):
-                    if model_dir.is_dir():
-                        print(f"- {model_dir.name}")
+            print("\nDownload Datasets")
+            download_datasets()
         
         elif choice == '9':
             print("\nGoodbye!")

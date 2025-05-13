@@ -11,8 +11,6 @@ import math  # For kaiming initialization
 # List of supported model types
 MODEL_TYPES = ['baseline', 'cnn', 'siamese', 'attention', 'arcface', 'hybrid', 'ensemble']
 
-
-
 class BaselineNet(nn.Module):
     """Basic CNN model I built for initial testing."""
     def __init__(self, num_classes: int = 18, input_size: Tuple[int, int] = (224, 224)):

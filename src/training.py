@@ -23,39 +23,7 @@ from .base_config import PROC_DATA_DIR, CHECKPOINTS_DIR, logger
 from .face_models import get_model, get_criterion
 from .data_utils import SiameseDataset
 from .lr_finder import LearningRateFinder
-
-def plot_confusion_matrix(cm, class_names, output_dir, model_name):
-    """
-    Plot confusion matrix as a heatmap.
-    """
-    plt.figure(figsize=(10, 8))
-    plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
-    plt.title('Confusion Matrix')
-    plt.colorbar()
-    tick_marks = np.arange(len(class_names))
-    plt.xticks(tick_marks, class_names, rotation=45)
-    plt.yticks(tick_marks, class_names)
-    
-    # Add text annotations
-    thresh = cm.max() / 2.
-    for i in range(cm.shape[0]):
-        for j in range(cm.shape[1]):
-            plt.text(j, i, cm[i, j],
-                    horizontalalignment="center",
-                    color="white" if cm[i, j] > thresh else "black")
-    
-    plt.tight_layout()
-    plt.ylabel('True label')
-    plt.xlabel('Predicted label')
-    
-    # Create the output directory structure if it doesn't exist
-    save_dir = Path(output_dir)
-    if model_name:
-        save_dir = save_dir / "plots" / model_name
-    save_dir.mkdir(parents=True, exist_ok=True)
-    
-    plt.savefig(save_dir / 'confusion_matrix.png')
-    plt.close()
+from .advanced_metrics import plot_confusion_matrix
 
 def plot_learning_curves(train_losses: List[float], val_losses: List[float], 
                        accuracies: List[float], output_dir: str, model_name: str):
@@ -181,7 +149,7 @@ def train_model(model_type: str, model_name: Optional[str] = None,
                 scheduler_type: str = 'reduce_lr', scheduler_patience: int = 5,
                 scheduler_factor: float = 0.5, clip_grad_norm: Optional[float] = None,
                 early_stopping: bool = False, early_stopping_patience: int = 10,
-                dataset_path: Optional[Path] = None,
+                dataset_path: Optional[Union[Path, List[Path]]] = None,
                 use_lr_finder: bool = False):
     """Train a face recognition model with advanced parameters.
     
@@ -198,13 +166,13 @@ def train_model(model_type: str, model_name: Optional[str] = None,
         clip_grad_norm: Max norm for gradient clipping (None to disable)
         early_stopping: Whether to use early stopping
         early_stopping_patience: Patience for early stopping
-        dataset_path: Optional path to the dataset (if None, will prompt for selection)
+        dataset_path: Optional path to the dataset or list of dataset paths
         use_lr_finder: Whether to use the learning rate finder to determine the optimal learning rate
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
     
-    # Get the dataset - either use provided path or prompt for selection
+    # Get the dataset - either use provided path, list of paths, or prompt for selection
     if dataset_path is None:
         # List available processed datasets
         processed_dirs = [d for d in PROC_DATA_DIR.iterdir() if d.is_dir() and (d / "train").exists()]
@@ -215,24 +183,45 @@ def train_model(model_type: str, model_name: Optional[str] = None,
         for i, d in enumerate(processed_dirs, 1):
             print(f"{i}. {d.name}")
         
-        while True:
-            dataset_choice = input("\nEnter dataset number to use for training: ")
+        # Allow selecting multiple datasets
+        selected_data_dirs = []
+        while not selected_data_dirs:
+            dataset_choice = input("\nEnter dataset number(s) to use for training (comma-separated for multiple): ")
             try:
-                dataset_idx = int(dataset_choice) - 1
-                if 0 <= dataset_idx < len(processed_dirs):
-                    selected_data_dir = processed_dirs[dataset_idx]
-                    break
+                # Handle comma-separated choices
+                if "," in dataset_choice:
+                    indices = [int(idx.strip()) - 1 for idx in dataset_choice.split(",")]
+                    for idx in indices:
+                        if 0 <= idx < len(processed_dirs):
+                            selected_data_dirs.append(processed_dirs[idx])
+                        else:
+                            print(f"Invalid choice: {idx+1}. Please try again.")
+                            selected_data_dirs = []
+                            break
                 else:
-                    print("Invalid choice. Please try again.")
+                    # Handle single choice
+                    dataset_idx = int(dataset_choice) - 1
+                    if 0 <= dataset_idx < len(processed_dirs):
+                        selected_data_dirs.append(processed_dirs[dataset_idx])
+                    else:
+                        print("Invalid choice. Please try again.")
             except ValueError:
-                print("Please enter a valid number.")
+                print("Please enter valid number(s).")
     else:
-        # Use provided dataset path
-        selected_data_dir = dataset_path
-        if not (selected_data_dir / "train").exists():
-            raise ValueError(f"Invalid dataset path: {selected_data_dir}. Missing 'train' directory.")
+        # Convert single path to list
+        if isinstance(dataset_path, list):
+            selected_data_dirs = dataset_path
+        else:
+            selected_data_dirs = [dataset_path]
+        
+        # Validate all paths
+        for data_dir in selected_data_dirs:
+            if not (data_dir / "train").exists():
+                raise ValueError(f"Invalid dataset path: {data_dir}. Missing 'train' directory.")
     
-    logger.info(f"Using dataset: {selected_data_dir.name}")
+    # Log all selected datasets
+    dataset_names = [d.name for d in selected_data_dirs]
+    logger.info(f"Using datasets: {', '.join(dataset_names)}")
     
     # Generate model name if not provided
     if model_name is None:
@@ -253,13 +242,13 @@ def train_model(model_type: str, model_name: Optional[str] = None,
     plots_dir = model_checkpoint_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
     
-    # Use Learning Rate Finder if requested
+    # Use Learning Rate Finder if requested - use first dataset for this
     if use_lr_finder:
         logger.info("Using LR Finder to determine optimal learning rate...")
         # Pass model_name to save results ONLY in the model directory
         lr_analysis = find_optimal_lr(
             model_type=model_type,
-            dataset_path=selected_data_dir,
+            dataset_path=selected_data_dirs[0],  # Use first dataset for LR finder
             batch_size=batch_size,
             model_name=model_name  # Pass model name for model-specific saving only
         )
@@ -273,8 +262,6 @@ def train_model(model_type: str, model_name: Optional[str] = None,
         # Use the suggested learning rate
         lr = suggested_lr
 
-        # No need to copy files - they're already saved in the model's directory
-    
     # Setup data transforms
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -283,26 +270,15 @@ def train_model(model_type: str, model_name: Optional[str] = None,
                            std=[0.229, 0.224, 0.225])
     ])
     
-    # Load datasets
-    if model_type == 'siamese':
-        train_dataset = SiameseDataset(str(selected_data_dir / "train"), transform=transform)
-        val_dataset = SiameseDataset(str(selected_data_dir / "val"), transform=transform)
-        test_dataset = SiameseDataset(str(selected_data_dir / "test"), transform=transform)
-        
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size)
-    else:
-        train_dataset = datasets.ImageFolder(selected_data_dir / "train", transform=transform)
-        val_dataset = datasets.ImageFolder(selected_data_dir / "val", transform=transform)
-        test_dataset = datasets.ImageFolder(selected_data_dir / "test", transform=transform)
-        
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size)
-        test_loader = DataLoader(test_dataset, batch_size=batch_size)
-    
     # Initialize model
-    num_classes = len(train_dataset.classes) if model_type != 'siamese' else 2
+    # Use first dataset to determine number of classes
+    if model_type == 'siamese':
+        first_dataset = SiameseDataset(str(selected_data_dirs[0] / "train"), transform=transform)
+        num_classes = 2
+    else:
+        first_dataset = datasets.ImageFolder(selected_data_dirs[0] / "train", transform=transform)
+        num_classes = len(first_dataset.classes)
+    
     model = get_model(model_type, num_classes=num_classes)
     model = model.to(device)
     
@@ -355,7 +331,7 @@ def train_model(model_type: str, model_name: Optional[str] = None,
             )
             logger.info(f"Using StepLR scheduler with step={scheduler_patience}, gamma={scheduler_factor}")
     
-    # Training loop
+    # Training variables
     train_losses = []
     val_losses = []
     accuracies = []
@@ -365,140 +341,178 @@ def train_model(model_type: str, model_name: Optional[str] = None,
     early_stopping_counter = 0
     best_val_loss = float('inf')
     
-    for epoch in range(epochs):
-        # Training phase
-        model.train()
-        train_loss = 0.0
-        start_time = time.time()
+    # Train on each dataset sequentially
+    for dataset_idx, selected_data_dir in enumerate(selected_data_dirs):
+        logger.info(f"Training on dataset {dataset_idx+1}/{len(selected_data_dirs)}: {selected_data_dir.name}")
         
-        for batch_idx, batch in enumerate(train_loader):
-            if model_type == 'siamese':
-                img1, img2, target = batch
-                img1, img2, target = img1.to(device), img2.to(device), target.to(device)
-                optimizer.zero_grad()
-                out1, out2 = model(img1, img2)
-                loss = criterion(out1, out2, target)
-            else:
-                data, target = batch
-                data, target = data.to(device), target.to(device)
-                optimizer.zero_grad()
-                
-                # Handle ArcFace differently
-                if model_type == 'arcface':
-                    output = model(data, target)  # ArcFace needs labels during forward pass
-                else:
-                    output = model(data)
-                    
-                loss = criterion(output, target)
+        # Load datasets for the current dataset
+        if model_type == 'siamese':
+            train_dataset = SiameseDataset(str(selected_data_dir / "train"), transform=transform)
+            val_dataset = SiameseDataset(str(selected_data_dir / "val"), transform=transform)
+            test_dataset = SiameseDataset(str(selected_data_dir / "test"), transform=transform)
             
-            loss.backward()
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=batch_size)
+            test_loader = DataLoader(test_dataset, batch_size=batch_size)
+        else:
+            train_dataset = datasets.ImageFolder(selected_data_dir / "train", transform=transform)
+            val_dataset = datasets.ImageFolder(selected_data_dir / "val", transform=transform)
+            test_dataset = datasets.ImageFolder(selected_data_dir / "test", transform=transform)
             
-            # Apply gradient clipping if enabled
-            if clip_grad_norm is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
-                
-            optimizer.step()
-            train_loss += loss.item()
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=batch_size)
+            test_loader = DataLoader(test_dataset, batch_size=batch_size)
         
-        # Validation phase
-        model.eval()
-        val_loss = 0.0
-        correct = 0
-        total = 0
-        y_true = []
-        y_pred = []
-        
-        with torch.no_grad():
-            for batch in val_loader:
+        # Training loop for the current dataset
+        for epoch in range(epochs):
+            # Training phase
+            model.train()
+            train_loss = 0.0
+            start_time = time.time()
+            
+            for batch_idx, batch in enumerate(train_loader):
                 if model_type == 'siamese':
                     img1, img2, target = batch
                     img1, img2, target = img1.to(device), img2.to(device), target.to(device)
+                    optimizer.zero_grad()
                     out1, out2 = model(img1, img2)
-                    val_loss += criterion(out1, out2, target).item()
-                    # Calculate distances and predict
-                    dist = F.pairwise_distance(out1, out2)
-                    pred = (dist < 0.5).float()
-                    correct += int(pred.eq(target.view_as(pred)).sum().item())
-                    total += target.size(0)
-                    
-                    # Collect predictions and targets for metrics
-                    y_true.extend(target.cpu().numpy().tolist())
-                    y_pred.extend(pred.cpu().numpy().tolist())
+                    loss = criterion(out1, out2, target)
                 else:
                     data, target = batch
                     data, target = data.to(device), target.to(device)
+                    optimizer.zero_grad()
                     
-                    # Handle ArcFace differently during validation
+                    # Handle ArcFace differently
                     if model_type == 'arcface':
-                        # In validation, we just need the embeddings
-                        output = model(data)
-                        # For validation purposes, use separate classifier layer
-                        val_classifier = nn.Linear(512, num_classes).to(device)
-                        logits = val_classifier(output)
+                        output = model(data, target)  # ArcFace needs labels during forward pass
                     else:
                         output = model(data)
-                        logits = output
+                        
+                    loss = criterion(output, target)
+                
+                loss.backward()
+                
+                # Apply gradient clipping if enabled
+                if clip_grad_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
                     
-                    val_loss += criterion(logits, target).item()
-                    _, pred = logits.max(1)
-                    correct += int(pred.eq(target).sum().item())
-                    total += target.size(0)
-                    
-                    # Collect predictions and targets for metrics
-                    y_true.extend(target.cpu().numpy().tolist())
-                    y_pred.extend(pred.cpu().numpy().tolist())
+                optimizer.step()
+                train_loss += loss.item()
+            
+            # Validation phase
+            model.eval()
+            val_loss = 0.0
+            correct = 0
+            total = 0
+            y_true = []
+            y_pred = []
+            
+            with torch.no_grad():
+                for batch in val_loader:
+                    if model_type == 'siamese':
+                        img1, img2, target = batch
+                        img1, img2, target = img1.to(device), img2.to(device), target.to(device)
+                        out1, out2 = model(img1, img2)
+                        val_loss += criterion(out1, out2, target).item()
+                        # Calculate distances and predict
+                        dist = F.pairwise_distance(out1, out2)
+                        pred = (dist < 0.5).float()
+                        correct += int(pred.eq(target.view_as(pred)).sum().item())
+                        total += target.size(0)
+                        
+                        # Collect predictions and targets for metrics
+                        y_true.extend(target.cpu().numpy().tolist())
+                        y_pred.extend(pred.cpu().numpy().tolist())
+                    else:
+                        data, target = batch
+                        data, target = data.to(device), target.to(device)
+                        
+                        # Handle ArcFace differently during validation
+                        if model_type == 'arcface':
+                            # In validation, we just need the embeddings
+                            output = model(data)
+                            # For validation purposes, use separate classifier layer
+                            val_classifier = nn.Linear(512, num_classes).to(device)
+                            logits = val_classifier(output)
+                        else:
+                            output = model(data)
+                            logits = output
+                        
+                        val_loss += criterion(logits, target).item()
+                        _, pred = logits.max(1)
+                        correct += int(pred.eq(target).sum().item())
+                        total += target.size(0)
+                        
+                        # Collect predictions and targets for metrics
+                        y_true.extend(target.cpu().numpy().tolist())
+                        y_pred.extend(pred.cpu().numpy().tolist())
+            
+            # Calculate epoch metrics
+            epoch_loss = train_loss / len(train_loader)
+            val_epoch_loss = val_loss / len(val_loader)
+            accuracy = correct / total
+            
+            # Store metrics for plotting
+            train_losses.append(epoch_loss)
+            val_losses.append(val_epoch_loss)
+            accuracies.append(accuracy)
+            
+            # Calculate epoch time
+            epoch_time = time.time() - start_time
+            
+            # Log metrics to console
+            dataset_prefix = f"[Dataset {dataset_idx+1}/{len(selected_data_dirs)}] "
+            logger.info(f'{dataset_prefix}Epoch {epoch+1}/{epochs}:')
+            logger.info(f'{dataset_prefix}Train Loss: {epoch_loss:.4f}, Val Loss: {val_epoch_loss:.4f}, Accuracy: {accuracy*100:.2f}%')
+            
+            # Save best model
+            if accuracy > best_val_acc:
+                best_val_acc = accuracy
+                torch.save(model.state_dict(), model_checkpoint_dir / 'best_model.pth')
+                print(f"{dataset_prefix}Saved best model with accuracy: {accuracy*100:.2f}%")
+            
+            # Update learning rate scheduler
+            if scheduler_type == 'reduce_lr' and scheduler is not None:
+                scheduler.step(val_epoch_loss)
+            elif scheduler_type in ['cosine', 'step'] and scheduler is not None:
+                scheduler.step()
+            
+            # Early stopping check
+            if early_stopping:
+                if val_epoch_loss < best_val_loss:
+                    best_val_loss = val_epoch_loss
+                    early_stopping_counter = 0
+                else:
+                    early_stopping_counter += 1
+                    if early_stopping_counter >= early_stopping_patience:
+                        print(f"{dataset_prefix}Early stopping triggered after {epoch+1} epochs")
+                        break
+            
+            # Plot learning curves every 5 epochs
+            if (epoch + 1) % 5 == 0:
+                plot_learning_curves(train_losses, val_losses, accuracies, 
+                                   str(model_checkpoint_dir), model_name)
         
-        # Calculate epoch metrics
-        epoch_loss = train_loss / len(train_loader)
-        val_epoch_loss = val_loss / len(val_loader)
-        accuracy = correct / total
-        
-        # Store metrics for plotting
-        train_losses.append(epoch_loss)
-        val_losses.append(val_epoch_loss)
-        accuracies.append(accuracy)
-        
-        # Calculate epoch time
-        epoch_time = time.time() - start_time
-        
-        # Log metrics to console
-        logger.info(f'Epoch {epoch+1}/{epochs}:')
-        logger.info(f'Train Loss: {epoch_loss:.4f}, Val Loss: {val_epoch_loss:.4f}, Accuracy: {accuracy*100:.2f}%')
-        
-        # Save best model
-        if accuracy > best_val_acc:
-            best_val_acc = accuracy
-            torch.save(model.state_dict(), model_checkpoint_dir / 'best_model.pth')
-            print(f"Saved best model with accuracy: {accuracy*100:.2f}%")
-        
-        # Update learning rate scheduler
-        if scheduler_type == 'reduce_lr' and scheduler is not None:
-            scheduler.step(val_epoch_loss)
-        elif scheduler_type in ['cosine', 'step'] and scheduler is not None:
-            scheduler.step()
-        
-        # Early stopping check
-        if early_stopping:
-            if val_epoch_loss < best_val_loss:
-                best_val_loss = val_epoch_loss
-                early_stopping_counter = 0
-            else:
-                early_stopping_counter += 1
-                if early_stopping_counter >= early_stopping_patience:
-                    print(f"Early stopping triggered after {epoch+1} epochs")
-                    break
-        
-        # Plot learning curves every 5 epochs
-        if (epoch + 1) % 5 == 0:
-            plot_learning_curves(train_losses, val_losses, accuracies, 
-                               str(model_checkpoint_dir), model_name)
+        # Save checkpoint after finishing each dataset
+        checkpoint_path = model_checkpoint_dir / f'checkpoint_dataset_{dataset_idx+1}.pth'
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'dataset_name': selected_data_dir.name,
+            'epoch': epochs,
+            'accuracy': accuracies[-1]
+        }, checkpoint_path)
+        logger.info(f"Saved checkpoint after training on {selected_data_dir.name}")
     
     # Plot final learning curves
     plot_learning_curves(train_losses, val_losses, accuracies, 
                        str(model_checkpoint_dir), model_name)
     
-    # Evaluation on test set
-    logger.info("Evaluating on test set...")
+    # Save final model
+    torch.save(model.state_dict(), model_checkpoint_dir / 'final_model.pth')
+    
+    # Evaluation on test set of the last dataset
+    logger.info("Evaluating on test set of the last dataset...")
     model.eval()
     test_loss = 0.0
     correct = 0
@@ -530,8 +544,8 @@ def train_model(model_type: str, model_name: Optional[str] = None,
                 if model_type == 'arcface':
                     output = model(data)
                     # For evaluation purposes, use separate classifier layer
-                    eval_classifier = nn.Linear(512, num_classes).to(device)
-                    logits = eval_classifier(output)
+                    test_classifier = nn.Linear(512, num_classes).to(device)
+                    logits = test_classifier(output)
                 else:
                     output = model(data)
                     logits = output
@@ -545,46 +559,9 @@ def train_model(model_type: str, model_name: Optional[str] = None,
                 all_y_true.extend(target.cpu().numpy().tolist())
                 all_y_pred.extend(pred.cpu().numpy().tolist())
     
-    # Calculate test metrics
-    test_loss /= len(test_loader)
-    accuracy = correct / total
-    
-    # Print test results
-    print(f"\nTest Results:")
-    print(f"Loss: {test_loss:.4f}, Accuracy: {accuracy*100:.2f}%")
-    
-    # Save test results
-    test_results = {
-        "test_loss": test_loss,
-        "test_accuracy": accuracy,
-        "model_type": model_type,
-        "dataset": selected_data_dir.name,
-        "training_config": {
-            "batch_size": batch_size,
-            "epochs": epoch + 1,  # Actual number of epochs run
-            "learning_rate": lr,
-            "weight_decay": weight_decay,
-            "scheduler": scheduler_type,
-            "scheduler_patience": scheduler_patience,
-            "scheduler_factor": scheduler_factor,
-            "gradient_clipping": clip_grad_norm,
-            "early_stopping": early_stopping,
-            "early_stopping_patience": early_stopping_patience if early_stopping else None,
-            "used_lr_finder": use_lr_finder
-        }
-    }
-
-    # Add LR finder results if they were used
-    if use_lr_finder and 'lr_analysis' in locals():
-        test_results["lr_finder"] = {
-            "suggested_lr": lr_analysis["overall"]["suggested_learning_rate"],
-            "min_lr": lr_analysis["overall"]["min_learning_rate"],
-            "max_lr": lr_analysis["overall"]["max_learning_rate"]
-        }
-    
-    with open(model_checkpoint_dir / "test_results.json", "w") as f:
-        import json
-        json.dump(test_results, f, indent=2)
+    # Calculate test accuracy
+    test_accuracy = correct / total
+    logger.info(f"Test accuracy: {test_accuracy*100:.2f}%")
     
     # Generate confusion matrix for non-siamese models
     if model_type != 'siamese':
@@ -593,23 +570,33 @@ def train_model(model_type: str, model_name: Optional[str] = None,
         
         cm = confusion_matrix(all_y_true_arr, all_y_pred_arr)
         plot_confusion_matrix(
-            cm, train_dataset.classes, 
-            str(model_checkpoint_dir), model_name
+            y_true=all_y_true_arr,
+            y_pred=all_y_pred_arr,
+            classes=train_dataset.classes, 
+            output_dir=str(plots_dir),
+            model_name=model_name,
+            detailed=True
         )
-        
-        # Generate classification report
-        report = classification_report(
-            all_y_true_arr, all_y_pred_arr, 
-            target_names=train_dataset.classes, 
-            output_dict=True
-        )
-        
-        # Save classification report
-        with open(model_checkpoint_dir / "classification_report.json", "w") as f:
-            json.dump(report, f, indent=2)
     
-    print(f"\nTraining complete! Model saved at {model_checkpoint_dir / 'best_model.pth'}")
-    print(f"Visualizations saved in {model_checkpoint_dir / 'plots'}")
+    # Save model info
+    model_info = {
+        'model_type': model_type,
+        'datasets': [d.name for d in selected_data_dirs],
+        'num_classes': num_classes,
+        'batch_size': batch_size,
+        'epochs': epochs,
+        'learning_rate': lr,
+        'weight_decay': weight_decay,
+        'scheduler_type': scheduler_type,
+        'test_accuracy': test_accuracy,
+        'best_validation_accuracy': best_val_acc
+    }
+    
+    with open(model_checkpoint_dir / 'model_info.json', 'w') as f:
+        import json
+        json.dump(model_info, f, indent=4)
+    
+    logger.info(f"Model training complete: {model_name}")
     
     return model_name
 

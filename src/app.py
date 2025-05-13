@@ -238,18 +238,48 @@ def main():
         num_faces = len(st.session_state.latest_faces)
         if num_faces > 0:
             st.sidebar.write(f"Detected {num_faces} face(s).")
-            face_ids = list(range(1, num_faces + 1))
-            sel_idx = st.sidebar.selectbox("Select face to add:", options=face_ids, index=0)
-            idx = sel_idx - 1
-            if st.sidebar.button("Capture Selected Face", key="capture"):
-                if 0 <= idx < num_faces:
-                    face = st.session_state.latest_faces[idx]
-                    if face.get('image') is not None and face.get('embedding') is not None:
-                        st.session_state.capture_info = {'image': face['image'], 'embedding': face['embedding']}
-                        print(f"Captured face {idx+1} for adding.")
-                        st.rerun()
-                    else: st.sidebar.warning("Selected face data incomplete.")
-                else: st.sidebar.error("Invalid face index.")
+            
+            # Initialize selected face index if not already in session state
+            if 'selected_face_idx' not in st.session_state:
+                st.session_state.selected_face_idx = 0
+            
+            # Display face thumbnails in a grid
+            cols = min(3, num_faces)
+            face_cols = st.sidebar.columns(cols)
+            
+            for i, face_data in enumerate(st.session_state.latest_faces):
+                face_img = face_data['image']
+                if face_img is not None:
+                    with face_cols[i % cols]:
+                        # Convert BGR to RGB for display
+                        rgb_img = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
+                        st.image(rgb_img, width=70, caption=f"Face #{i+1}")
+                        if st.button(f"Select #{i+1}", key=f"sel_face_{i}"):
+                            st.session_state.selected_face_idx = i
+                            # Force UI refresh when selection changes
+                            st.rerun()
+            
+            # Highlight and display currently selected face
+            st.sidebar.markdown("---")
+            if 0 <= st.session_state.selected_face_idx < num_faces:
+                selected_face = st.session_state.latest_faces[st.session_state.selected_face_idx]
+                selected_img = selected_face['image']
+                if selected_img is not None:
+                    st.sidebar.markdown(f"**Selected Face #{st.session_state.selected_face_idx + 1}:**")
+                    st.sidebar.image(cv2.cvtColor(selected_img, cv2.COLOR_BGR2RGB), width=150)
+                    
+                    if st.sidebar.button("Capture Selected Face", key="capture"):
+                        if selected_face.get('image') is not None and selected_face.get('embedding') is not None:
+                            st.session_state.capture_info = {
+                                'image': selected_face['image'], 
+                                'embedding': selected_face['embedding']
+                            }
+                            print(f"Captured face {st.session_state.selected_face_idx+1} for adding.")
+                            st.rerun()
+                        else: 
+                            st.sidebar.warning("Selected face data incomplete.")
+                else:
+                    st.sidebar.error("Selected face image is invalid.")
         else: st.sidebar.info("Point the camera at a face.")
     else: st.sidebar.info("Start webcam to capture faces.")
 
@@ -358,18 +388,18 @@ def main():
 
                     # Green for recognized, red for unknown
                     if name != "Unknown":
-                        color = (0, 255, 0); label = f"{name} ({dist:.2f})"
+                        color = (255, 165, 0); label = f"{name} ({dist:.2f})"  # Orange for recognized
                         if name not in recognized: recognized.append(name)
                     else:
-                        color = (0, 0, 255); label = f"Unknown #{i+1} (p={prob:.2f})"
+                        color = (0, 0, 255); label = f"Unknown #{i+1} (p={prob:.2f})"  # Red for unknown
 
                     # Draw bounding box
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                     
-                    # Draw label with background for better visibility
-                    (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                    cv2.rectangle(frame, (x1, y1 - h - 4), (x1 + w, y1), color, -1)
-                    cv2.putText(frame, label, (x1, y1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                    # Draw label with black background for better visibility
+                    (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                    cv2.rectangle(frame, (x1, y1 - h - 8), (x1 + w + 4, y1), (0, 0, 0), -1)
+                    cv2.putText(frame, label, (x1 + 2, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 
                 frame_place.image(frame, channels="RGB", use_container_width=True)
                 

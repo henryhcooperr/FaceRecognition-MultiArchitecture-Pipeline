@@ -353,7 +353,7 @@ def visualize_preprocessing_steps(image_path: str, config: PreprocessingConfig, 
         logger.error(f"Error visualizing preprocessing for {image_path}: {str(e)}")
         return None
 
-def process_raw_data(raw_data_dir, output_dir, config=None, test_mode=False):
+def process_raw_data(raw_data_dir, output_dir, config=None, test_mode=False, max_samples_per_class=None):
     """Process raw image data for face recognition.
     
     Args:
@@ -361,6 +361,7 @@ def process_raw_data(raw_data_dir, output_dir, config=None, test_mode=False):
         output_dir: Path to output directory for processed data
         config: PreprocessingConfig object
         test_mode: If True, only process a small subset of data for testing
+        max_samples_per_class: Maximum number of samples to use per class
         
     Returns:
         Path: Base output directory containing processed data
@@ -390,6 +391,11 @@ def process_raw_data(raw_data_dir, output_dir, config=None, test_mode=False):
     
     # Set the output subdirectory based on the config name
     base_output_dir = output_dir / config.name
+    
+    # If max_samples_per_class is set, update the output dir name to reflect it
+    if max_samples_per_class is not None:
+        base_output_dir = output_dir / f"{config.name}_max{max_samples_per_class}"
+        print(f"Limiting to {max_samples_per_class} samples per class")
     
     # Create MTCNN detector if needed
     mtcnn = None
@@ -452,8 +458,13 @@ def process_raw_data(raw_data_dir, output_dir, config=None, test_mode=False):
                     print(f"No images found for {person_name}, skipping")
                     continue
                 
-                # Shuffle images for random split
+                # Shuffle images for random selection and split
                 random.shuffle(image_files)
+                
+                # Limit the number of images if max_samples_per_class is set
+                if max_samples_per_class is not None:
+                    image_files = image_files[:max_samples_per_class]
+                    print(f"Using {len(image_files)} images for {person_name}")
                 
                 # Limit the number of images in test mode
                 if test_mode:

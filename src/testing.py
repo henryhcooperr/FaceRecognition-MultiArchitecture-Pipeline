@@ -21,9 +21,10 @@ from tqdm import tqdm
 import random
 import os
 
-from .base_config import PROC_DATA_DIR, CHECKPOINTS_DIR, VIZ_DIR, logger
-from .face_models import get_model
+from .base_config import PROC_DATA_DIR, CHECKPOINTS_DIR, OUT_DIR, logger, check_gpu
+from .face_models import get_model, MODEL_TYPES
 from .data_utils import SiameseDataset  # Updated import to use data_utils
+from .advanced_metrics import plot_confusion_matrix, create_enhanced_confusion_matrix, calculate_per_class_metrics
 
 def evaluate_model(model_type: str, model_name: Optional[str] = None, auto_dataset: bool = False):
     """Evaluate a trained model with comprehensive metrics."""
@@ -40,7 +41,6 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None, auto_datas
     if not model_checkpoint_dir.exists():
         raise ValueError(f"Model not found: {model_name}")
     
-    # List available processed datasets with various directory structures
     processed_dirs = []
     dataset_names = set()  # For deduplication
     
@@ -61,7 +61,6 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None, auto_datas
                         processed_dirs.append((dataset_dir, dataset_path))
                         dataset_names.add(dataset_path)
     
-    # Also check for simpler structure where test is directly in PROC_DATA_DIR
     if (PROC_DATA_DIR / "test").exists():
         if "root" not in dataset_names:
             processed_dirs.append((PROC_DATA_DIR, "processed (root)"))
@@ -96,7 +95,7 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None, auto_datas
     logger.info(f"Using dataset: {selected_data_dir.name}")
     
     # Create model-specific visualization directory
-    model_viz_dir = VIZ_DIR / model_name
+    model_viz_dir = OUT_DIR / model_name
     model_viz_dir.mkdir(parents=True, exist_ok=True)
     
     # Setup data transforms
@@ -401,17 +400,14 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None, auto_datas
     logger.info("Generating visualizations...")
     
     # Plot confusion matrix
-    cm = confusion_matrix(all_targets, all_predictions)
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=class_names,
-                yticklabels=class_names)
-    plt.title('Confusion Matrix')
-    plt.xlabel('Predicted')
-    plt.ylabel('True')
-    plt.tight_layout()
-    plt.savefig(model_viz_dir / 'confusion_matrix.png')
-    plt.close()
+    plot_confusion_matrix(
+        y_true=all_targets, 
+        y_pred=all_predictions, 
+        classes=class_names, 
+        output_dir=str(model_viz_dir), 
+        model_name=model_name,
+        detailed=True  # Use detailed view with per-class metrics
+    )
     
     # Plot ROC curve
     plt.figure(figsize=(8, 6))
@@ -547,44 +543,15 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None, auto_datas
         'inference_time': avg_inference_time
     }
 
-def plot_confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, 
-                         classes: List[str], output_dir: str, model_name: str):
-    """Plot detailed confusion matrix with additional metrics."""
-    # Compute confusion matrix
-    cm = confusion_matrix(y_true, y_pred)
-    
-    # Compute metrics per class
-    precision = precision_score(y_true, y_pred, average=None)
-    recall = recall_score(y_true, y_pred, average=None)
-    f1 = f1_score(y_true, y_pred, average=None)
-    
-    # Plot confusion matrix
-    plt.figure(figsize=(15, 10))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=classes, yticklabels=classes)
-    plt.title('Confusion Matrix')
-    plt.xlabel('Predicted')
-    plt.ylabel('True')
-    plt.tight_layout()
-    plt.savefig(Path(output_dir) / model_name / 'confusion_matrix_detailed.png')
-    plt.close()
-    
-    # Plot per-class metrics
-    metrics_df = pd.DataFrame({
-        'Precision': precision,
-        'Recall': recall,
-        'F1-Score': f1
-    }, index=classes)
-    
-    plt.figure(figsize=(12, 6))
-    metrics_df.plot(kind='bar')
-    plt.title('Per-Class Performance Metrics')
-    plt.xlabel('Class')
-    plt.ylabel('Score')
-    plt.xticks(rotation=45, ha='right')
-    plt.tight_layout()
-    plt.savefig(Path(output_dir) / model_name / 'per_class_metrics.png')
-    plt.close()
+def calculate_detailed_metrics(all_targets, all_predictions, all_probs, class_names):
+    """Calculate detailed performance metrics for model evaluation."""
+    # ...
+    return {
+        'accuracy': accuracy,
+        'roc_auc': roc_auc,
+        'pr_auc': pr_auc,
+        'inference_time': avg_inference_time
+    }
 
 def plot_roc_curves(y_true: np.ndarray, y_score: np.ndarray, 
                    classes: List[str], output_dir: str, model_name: str):
@@ -662,7 +629,7 @@ def generate_gradcam(model: nn.Module, image_tensor: torch.Tensor,
             logger.error("Output is not a valid tensor or has no elements")
             return np.zeros((224, 224), dtype=np.float32)
             
-        # Get the score
+
         if model_type == 'siamese':
             score = output  # Use distance as score for siamese
             logger.info(f"Using distance as score for siamese model")
@@ -704,16 +671,16 @@ def generate_gradcam(model: nn.Module, image_tensor: torch.Tensor,
         # Normalize
         cam = F.interpolate(cam, size=(224, 224), mode='bilinear', align_corners=False)
         cam = cam - cam.min()
-        if cam.max() > 1e-8:  # Prevent division by zero
+        if cam.max() > 1e-8: 
             cam = cam / (cam.max() + 1e-8)
         else:
             logger.warning("CAM has very small values, may result in poor visualization")
         
-        # Convert to numpy and return - make sure it's 2D
+
         cam_np = cam.squeeze().cpu().numpy()
         logger.info(f"Generated CAM with shape: {cam_np.shape}")
         
-        # Handle the case where cam_np is still not 2D
+
         if len(cam_np.shape) > 2:
             # If it has more than 2 dimensions, take the first channel
             cam_np = cam_np[0]

@@ -48,7 +48,6 @@ TRIAL0_BASELINES = {
         "epochs": 40, "batch_size": 64, "learning_rate": 1e-3,
         "weight_decay": 1e-5, "dropout": 0.35, "scheduler": "onecycle"
     },
-    # Adding baselines for the remaining model types
     "baseline": {
         "epochs": 30, "batch_size": 32, "learning_rate": 5e-3,
         "weight_decay": 1e-4, "dropout": 0.5, "scheduler": "reduce_lr",
@@ -161,8 +160,7 @@ def get_scheduler(optimizer: torch.optim.Optimizer, params: Dict[str, Any], epoc
             optimizer,
             mode='min',
             factor=params.get("scheduler_factor", 0.5),
-            patience=params.get("scheduler_patience", 5),
-            verbose=True
+            patience=params.get("scheduler_patience", 5)
         )
     else:
         return None
@@ -243,7 +241,8 @@ def run_hyperparameter_tuning(model_type: Optional[str] = None,
                              timeout: Optional[int] = None,
                              use_trial0_baseline: bool = True,
                              keep_checkpoints: int = 1,
-                             use_lr_finder: bool = False) -> Optional[Dict[str, Any]]:
+                             use_lr_finder: bool = False,
+                             optimizer_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Run hyperparameter tuning for a model.
     
     Args:
@@ -254,6 +253,7 @@ def run_hyperparameter_tuning(model_type: Optional[str] = None,
         use_trial0_baseline: Whether to use trial-0 baseline for first trial
         keep_checkpoints: Number of best checkpoints to keep per trial
         use_lr_finder: Whether to use LR Finder to determine optimal learning rates for each trial
+        optimizer_type: Type of optimizer to use ('AdamW', 'RAdam', 'SGD_momentum', or None to try all)
         
     Returns:
         Dictionary containing best parameters and results, or None if tuning fails
@@ -367,7 +367,7 @@ def run_hyperparameter_tuning(model_type: Optional[str] = None,
     
     # Run optimization
     study.optimize(
-        lambda trial: objective(trial, model_type, dataset_path, use_trial0_baseline, use_lr_finder),
+        lambda trial: objective(trial, model_type, dataset_path, use_trial0_baseline, use_lr_finder, optimizer_type),
         n_trials=n_trials,
         timeout=timeout
     )
@@ -467,7 +467,7 @@ def create_search_space():
     }
 
 def objective(trial: optuna.Trial, model_type: str, dataset_path: Path, 
-            use_trial0_baseline: bool, use_lr_finder: bool = False) -> float:
+            use_trial0_baseline: bool, use_lr_finder: bool = False, optimizer_type: Optional[str] = None) -> float:
     """Objective function for hyperparameter optimization.
     
     Args:
@@ -476,6 +476,7 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
         dataset_path: Path to the dataset
         use_trial0_baseline: Whether to use trial-0 baseline
         use_lr_finder: Whether to use the LR Finder to determine optimal learning rate
+        optimizer_type: Type of optimizer to use ('AdamW', 'RAdam', 'SGD_momentum', or None to try all)
         
     Returns:
         Validation accuracy for the trial
@@ -510,7 +511,14 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
         params['learning_rate'] = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
     
     params['weight_decay'] = trial.suggest_float('weight_decay', 1e-5, 1e-3, log=True)
-    params['optimizer'] = trial.suggest_categorical('optimizer', ['AdamW', 'RAdam', 'SGD_momentum'])
+    
+    # Set optimizer type based on user preference or sample if not specified
+    if optimizer_type:
+        params['optimizer'] = optimizer_type
+        logger.info(f"Using user-specified optimizer: {optimizer_type}")
+    else:
+        params['optimizer'] = trial.suggest_categorical('optimizer', ['AdamW', 'RAdam', 'SGD_momentum'])
+    
     params['scheduler'] = trial.suggest_categorical('scheduler', ['cosine', 'onecycle', 'plateau'])
     params['dropout'] = trial.suggest_float('dropout', 0.0, 0.5)
     

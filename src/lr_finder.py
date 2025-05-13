@@ -26,20 +26,6 @@ class LearningRateFinder:
                  num_iterations: int = 100,
                  diverge_threshold: float = 4.0,
                  save_dir: Optional[Path] = None):
-        """
-        Initialize the learning rate finder.
-        
-        Args:
-            model: The neural network model
-            criterion: Loss function
-            optimizer: Optimizer (will be modified during search)
-            device: Device to run the model on
-            start_lr: Starting learning rate for the search
-            end_lr: Maximum learning rate to try
-            num_iterations: Number of iterations to run
-            diverge_threshold: Stop if loss exceeds this times the best loss
-            save_dir: Optional directory to save plots and results
-        """
         self.model = model
         self.criterion = criterion
         self.optimizer = optimizer
@@ -92,38 +78,62 @@ class LearningRateFinder:
                 # Handle different batch formats
                 if isinstance(batch, (tuple, list)):
                     if len(batch) == 2:
+                        # Standard (inputs, targets) format
                         inputs, targets = batch
+                        is_siamese = False
+                    elif len(batch) == 3:
+                        # Siamese network format (img1, img2, target)
+                        img1, img2, targets = batch
+                        is_siamese = True
                     else:
-                        raise ValueError(f"Expected batch to be (inputs, targets) tuple, got {len(batch)} items")
+                        raise ValueError(f"Unsupported batch format with {len(batch)} items")
                 else:
                     raise ValueError(f"Expected batch to be tuple or list, got {type(batch)}")
                 
                 # Move data to device
-                inputs = inputs.to(self.device)
-                targets = targets.to(self.device)
+                if is_siamese:
+                    img1 = img1.to(self.device)
+                    img2 = img2.to(self.device)
+                    targets = targets.to(self.device)
+                else:
+                    inputs = inputs.to(self.device)
+                    targets = targets.to(self.device)
                 
-                # Forward pass with labels for training
-                if hasattr(self.model, 'forward'):
-                    # Check if model's forward method requires labels during training
-                    import inspect
-                    forward_sig = inspect.signature(self.model.forward)
-                    if 'labels' in forward_sig.parameters:
-                        outputs = self.model(inputs, labels=targets)
-                        # If model returns tuple (outputs, loss), use the loss directly
-                        if isinstance(outputs, tuple):
-                            loss = outputs[1]
-                            outputs = outputs[0]
+                # Forward pass
+                self.optimizer.zero_grad()
+                
+                if is_siamese:
+                    # Handle Siamese networks
+                    outputs = self.model(img1, img2)
+                    # Check if model returns a tuple of outputs or a distance
+                    if isinstance(outputs, tuple):
+                        out1, out2 = outputs
+                        loss = self.criterion(out1, out2, targets)
+                    else:
+                        # For models that might return a distance directly
+                        loss = self.criterion(outputs, targets)
+                else:
+                    # Handle regular networks
+                    if hasattr(self.model, 'forward'):
+                        # Check if model's forward method requires labels during training
+                        import inspect
+                        forward_sig = inspect.signature(self.model.forward)
+                        if 'labels' in forward_sig.parameters:
+                            outputs = self.model(inputs, labels=targets)
+                            # If model returns tuple (outputs, loss), use the loss directly
+                            if isinstance(outputs, tuple):
+                                loss = outputs[1]
+                                outputs = outputs[0]
+                            else:
+                                loss = self.criterion(outputs, targets)
                         else:
+                            outputs = self.model(inputs)
                             loss = self.criterion(outputs, targets)
                     else:
                         outputs = self.model(inputs)
                         loss = self.criterion(outputs, targets)
-                else:
-                    outputs = self.model(inputs)
-                    loss = self.criterion(outputs, targets)
                 
                 # Backward pass
-                self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()
                 
