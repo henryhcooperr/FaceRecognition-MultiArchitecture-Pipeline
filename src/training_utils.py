@@ -30,14 +30,6 @@ class EarlyStopping:
     """
     
     def __init__(self, patience: int = 10, min_delta: float = 0.0, mode: str = 'min'):
-        """
-        Initialize early stopping object.
-        
-        Args:
-            patience: Number of epochs with no improvement after which training will stop
-            min_delta: Minimum change to qualify as an improvement
-            mode: 'min' for metrics where lower is better (e.g., loss), 'max' where higher is better (e.g., accuracy)
-        """
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0

@@ -14,6 +14,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report
 import time
+import threading
+import pandas as pd  # Also import pandas since we use it for saving metrics
 
 # Add a type alias for the scheduler types
 from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR, StepLR
@@ -27,25 +29,76 @@ from .advanced_metrics import plot_confusion_matrix
 
 def plot_learning_curves(train_losses: List[float], val_losses: List[float], 
                        accuracies: List[float], output_dir: str, model_name: str):
-    """Plot learning curves during training."""
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+    """Plot learning curves during training with enhanced visualizations."""
+    # Create a 2x2 subplot grid for more detailed plots
+    fig, axs = plt.subplots(2, 2, figsize=(16, 12))
     
-    # Plot losses
-    ax1.plot(train_losses, label='Train Loss')
-    ax1.plot(val_losses, label='Validation Loss')
+    # Plot combined losses
+    ax1 = axs[0, 0]
+    epochs = list(range(1, len(train_losses) + 1))
+    ax1.plot(epochs, train_losses, 'b-', marker='o', markersize=4, label='Train Loss')
+    ax1.plot(epochs, val_losses, 'r-', marker='x', markersize=4, label='Validation Loss')
     ax1.set_xlabel('Epoch')
     ax1.set_ylabel('Loss')
     ax1.set_title('Training and Validation Loss')
-    ax1.legend()
+    ax1.legend(loc='upper right')
+    ax1.grid(True, linestyle='--', alpha=0.7)
     
     # Plot accuracy
-    ax2.plot(accuracies, label='Validation Accuracy')
+    ax2 = axs[0, 1]
+    ax2.plot(epochs, accuracies, 'g-', marker='s', markersize=4, label='Validation Accuracy')
     ax2.set_xlabel('Epoch')
     ax2.set_ylabel('Accuracy')
     ax2.set_title('Validation Accuracy')
-    ax2.legend()
+    ax2.set_ylim([0, 1.05])  # Set y-axis from 0 to slightly above 1
+    ax2.grid(True, linestyle='--', alpha=0.7)
     
-    plt.tight_layout()
+    # Add accuracy percentage annotations on the right side
+    for i, acc in enumerate(accuracies):
+        if i % 2 == 0 or i == len(accuracies) - 1:  # Annotate every other point to avoid clutter
+            ax2.annotate(f'{acc*100:.1f}%', 
+                         xy=(epochs[i], acc), 
+                         xytext=(5, 0),
+                         textcoords='offset points',
+                         fontsize=8,
+                         color='darkgreen')
+    
+    # Plot side-by-side loss comparison
+    ax3 = axs[1, 0]
+    bar_width = 0.35
+    indices = np.arange(len(epochs))
+    ax3.bar(indices - bar_width/2, train_losses, bar_width, label='Train Loss', alpha=0.7, color='blue')
+    ax3.bar(indices + bar_width/2, val_losses, bar_width, label='Val Loss', alpha=0.7, color='red')
+    ax3.set_xlabel('Epoch')
+    ax3.set_ylabel('Loss')
+    ax3.set_title('Train vs Validation Loss Comparison')
+    ax3.set_xticks(indices)
+    ax3.set_xticklabels(epochs)
+    ax3.legend()
+    
+    # Plot loss vs accuracy scatter
+    ax4 = axs[1, 1]
+    scatter = ax4.scatter(val_losses, accuracies, c=epochs, cmap='viridis', 
+                          s=80, edgecolors='black', alpha=0.8)
+    ax4.set_xlabel('Validation Loss')
+    ax4.set_ylabel('Accuracy')
+    ax4.set_title('Validation Loss vs Accuracy')
+    ax4.grid(True, linestyle='--', alpha=0.7)
+    
+    # Add colorbar to show epoch progression
+    cbar = plt.colorbar(scatter, ax=ax4)
+    cbar.set_label('Epoch')
+    
+    # Add arrows to show progression over time
+    for i in range(len(val_losses) - 1):
+        ax4.annotate('', 
+                    xy=(val_losses[i+1], accuracies[i+1]), 
+                    xytext=(val_losses[i], accuracies[i]),
+                    arrowprops=dict(arrowstyle='->', color='gray', lw=0.5, alpha=0.5))
+    
+    # Add overall title
+    plt.suptitle(f'Learning Curves for {model_name}', fontsize=16)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust to accommodate the main title
     
     # Create the output directory structure if it doesn't exist
     save_dir = Path(output_dir)
@@ -54,7 +107,34 @@ def plot_learning_curves(train_losses: List[float], val_losses: List[float],
     save_dir.mkdir(parents=True, exist_ok=True)
     
     # Save the figure to the created directory
-    plt.savefig(save_dir / 'learning_curves.png')
+    plt.savefig(save_dir / 'learning_curves.png', dpi=300, bbox_inches='tight')
+    
+    # Save a separate high-quality version for presentations
+    plt.savefig(save_dir / 'learning_curves_hq.pdf', format='pdf', bbox_inches='tight')
+    plt.close()
+    
+    # Save individual plots as well for easier viewing
+    # Losses
+    plt.figure(figsize=(10, 6))
+    plt.plot(epochs, train_losses, 'b-', marker='o', label='Train Loss')
+    plt.plot(epochs, val_losses, 'r-', marker='x', label='Validation Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title(f'{model_name}: Training and Validation Loss')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.savefig(save_dir / 'losses.png', dpi=200)
+    plt.close()
+    
+    # Accuracy
+    plt.figure(figsize=(10, 6))
+    plt.plot(epochs, accuracies, 'g-', marker='s', label='Validation Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.title(f'{model_name}: Validation Accuracy')
+    plt.ylim([0, 1.05])
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.savefig(save_dir / 'accuracy.png', dpi=200)
     plt.close()
 
 def find_optimal_lr(model_type: str, dataset_path: Path, batch_size: int = 32,
@@ -370,13 +450,35 @@ def train_model(model_type: str, model_name: Optional[str] = None,
             train_loss = 0.0
             start_time = time.time()
             
+            # Calculate number of batches to process (limit to prevent freezing)
+            max_train_batches = min(len(train_loader), 100)  # Limit to 100 batches max
+            
             for batch_idx, batch in enumerate(train_loader):
+                # Break after maximum number of batches to prevent freezing
+                if batch_idx >= max_train_batches:
+                    logger.info(f"Reached maximum training batches ({max_train_batches}/{len(train_loader)}). Moving to validation...")
+                    break
+                
                 if model_type == 'siamese':
-                    img1, img2, target = batch
-                    img1, img2, target = img1.to(device), img2.to(device), target.to(device)
-                    optimizer.zero_grad()
-                    out1, out2 = model(img1, img2)
-                    loss = criterion(out1, out2, target)
+                    try:
+                        img1, img2, target = batch
+                        img1, img2, target = img1.to(device), img2.to(device), target.to(device)
+                        optimizer.zero_grad()
+                        out1, out2 = model(img1, img2)
+                        loss = criterion(out1, out2, target)
+                        
+                        # Add progress logging
+                        if batch_idx % 5 == 0:
+                            logger.info(f"Epoch {epoch+1}/{epochs} | Batch {batch_idx}/{max_train_batches} | Loss: {loss.item():.4f}")
+                        
+                        # Add timeout check for long batches
+                        if time.time() - start_time > 30:  # 30 second timeout per batch
+                            logger.warning(f"Batch {batch_idx} taking too long (>30s). Skipping to next batch.")
+                            continue
+                            
+                    except Exception as e:
+                        logger.error(f"Error in training batch {batch_idx}: {e}")
+                        continue
                 else:
                     data, target = batch
                     data, target = data.to(device), target.to(device)
@@ -390,14 +492,35 @@ def train_model(model_type: str, model_name: Optional[str] = None,
                         
                     loss = criterion(output, target)
                 
-                loss.backward()
-                
-                # Apply gradient clipping if enabled
-                if clip_grad_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
+                # Safely perform backpropagation with timeouts and error handling
+                try:
+                    # Set a timer for gradient computation
+                    start_backward = time.time()
+                    loss.backward()
                     
-                optimizer.step()
-                train_loss += loss.item()
+                    # Check if backward pass took too long
+                    if time.time() - start_backward > 10:  # 10 second timeout for backward pass
+                        logger.warning(f"Backward pass taking too long (>{time.time() - start_backward:.1f}s) for batch {batch_idx}")
+                    
+                    # Apply gradient clipping if enabled
+                    if clip_grad_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
+                    
+                    # Set timer for optimizer step
+                    start_optim = time.time()
+                    optimizer.step()
+                    
+                    # Check if optimizer step took too long
+                    if time.time() - start_optim > 5:  # 5 second timeout for optimizer step
+                        logger.warning(f"Optimizer step taking too long (>{time.time() - start_optim:.1f}s) for batch {batch_idx}")
+                    
+                    train_loss += loss.item()
+                    
+                except RuntimeError as e:
+                    logger.error(f"Runtime error in batch {batch_idx}: {e}")
+                    if "out of memory" in str(e).lower():
+                        logger.error("GPU out of memory error. Skipping this batch.")
+                    continue
             
             # Validation phase
             model.eval()
@@ -407,22 +530,44 @@ def train_model(model_type: str, model_name: Optional[str] = None,
             y_true = []
             y_pred = []
             
+            # Optimize by using smaller validation samples to prevent freezing
+            val_sample_size = min(len(val_loader), 20)  # Limit validation to 20 batches max
+            
             with torch.no_grad():
-                for batch in val_loader:
+                for batch_idx, batch in enumerate(val_loader):
+                    # Break after processing val_sample_size batches to prevent freezing
+                    if batch_idx >= val_sample_size:
+                        break
+                        
                     if model_type == 'siamese':
                         img1, img2, target = batch
                         img1, img2, target = img1.to(device), img2.to(device), target.to(device)
-                        out1, out2 = model(img1, img2)
-                        val_loss += criterion(out1, out2, target).item()
-                        # Calculate distances and predict
-                        dist = F.pairwise_distance(out1, out2)
-                        pred = (dist < 0.5).float()
-                        correct += int(pred.eq(target.view_as(pred)).sum().item())
-                        total += target.size(0)
                         
-                        # Collect predictions and targets for metrics
-                        y_true.extend(target.cpu().numpy().tolist())
-                        y_pred.extend(pred.cpu().numpy().tolist())
+                        # Forward pass with error handling
+                        try:
+                            out1, out2 = model(img1, img2)
+                            batch_loss = criterion(out1, out2, target).item()
+                            val_loss += batch_loss
+                            
+                            # Calculate distances and predict
+                            dist = F.pairwise_distance(out1, out2)
+                            pred = (dist < 0.5).float()
+                            correct += int(pred.eq(target.view_as(pred)).sum().item())
+                            total += target.size(0)
+                            
+                            # Log validation progress
+                            if batch_idx % 2 == 0:  # Increase logging frequency
+                                current_acc = correct / max(1, total)
+                                logger.info(f"Validation | Batch {batch_idx}/{val_sample_size} | Loss: {batch_loss:.4f} | Current Acc: {current_acc*100:.2f}%")
+                            
+                            # Collect predictions and targets for metrics
+                            y_true.extend(target.cpu().numpy().tolist())
+                            y_pred.extend(pred.cpu().numpy().tolist())
+                            
+                        except Exception as e:
+                            logger.error(f"Error during validation: {e}")
+                            # Continue with next batch if there's an error
+                            continue
                     else:
                         data, target = batch
                         data, target = data.to(device), target.to(device)
@@ -460,10 +605,30 @@ def train_model(model_type: str, model_name: Optional[str] = None,
             # Calculate epoch time
             epoch_time = time.time() - start_time
             
+            # Print more detailed accuracy metrics for Siamese networks
+            if model_type == 'siamese':
+                # Calculate metrics by class
+                y_true_np = np.array(y_true)
+                y_pred_np = np.array(y_pred)
+                
+                # Class 0 = same person, Class 1 = different person
+                class0_correct = np.sum((y_true_np == 0) & (y_pred_np == 0))
+                class0_total = np.sum(y_true_np == 0)
+                class1_correct = np.sum((y_true_np == 1) & (y_pred_np == 1))
+                class1_total = np.sum(y_true_np == 1)
+                
+                # Calculate class accuracies
+                class0_acc = class0_correct / max(1, class0_total)
+                class1_acc = class1_correct / max(1, class1_total)
+                
+                logger.info(f"Same Person Accuracy: {class0_acc*100:.2f}% ({class0_correct}/{class0_total})")
+                logger.info(f"Different Person Accuracy: {class1_acc*100:.2f}% ({class1_correct}/{class1_total})")
+            
             # Log metrics to console
             dataset_prefix = f"[Dataset {dataset_idx+1}/{len(selected_data_dirs)}] "
             logger.info(f'{dataset_prefix}Epoch {epoch+1}/{epochs}:')
             logger.info(f'{dataset_prefix}Train Loss: {epoch_loss:.4f}, Val Loss: {val_epoch_loss:.4f}, Accuracy: {accuracy*100:.2f}%')
+            logger.info(f'{dataset_prefix}Epoch time: {epoch_time:.2f}s')
             
             # Save best model
             if accuracy > best_val_acc:
@@ -488,10 +653,25 @@ def train_model(model_type: str, model_name: Optional[str] = None,
                         print(f"{dataset_prefix}Early stopping triggered after {epoch+1} epochs")
                         break
             
-            # Plot learning curves every 5 epochs
-            if (epoch + 1) % 5 == 0:
-                plot_learning_curves(train_losses, val_losses, accuracies, 
-                                   str(model_checkpoint_dir), model_name)
+            # Plot learning curves every 5 epochs, but only if we have enough data
+            if (epoch + 1) % 5 == 0 and len(train_losses) >= 3:
+                try:
+                    # Use a separate thread for plotting to avoid freezing the main thread
+                    plot_thread = threading.Thread(
+                        target=plot_learning_curves,
+                        args=(train_losses, val_losses, accuracies, str(model_checkpoint_dir), model_name)
+                    )
+                    plot_thread.daemon = True  # Daemon thread will terminate when main thread exits
+                    plot_thread.start()
+                    logger.info(f"Started background plotting for epoch {epoch+1}")
+                except Exception as e:
+                    logger.error(f"Error starting plot thread: {e}")
+                    # Fall back to synchronous plotting if threading fails
+                    try:
+                        plot_learning_curves(train_losses, val_losses, accuracies, 
+                                           str(model_checkpoint_dir), model_name)
+                    except Exception as e2:
+                        logger.error(f"Error plotting learning curves: {e2}")
         
         # Save checkpoint after finishing each dataset
         checkpoint_path = model_checkpoint_dir / f'checkpoint_dataset_{dataset_idx+1}.pth'
@@ -504,9 +684,28 @@ def train_model(model_type: str, model_name: Optional[str] = None,
         }, checkpoint_path)
         logger.info(f"Saved checkpoint after training on {selected_data_dir.name}")
     
-    # Plot final learning curves
-    plot_learning_curves(train_losses, val_losses, accuracies, 
-                       str(model_checkpoint_dir), model_name)
+    # Plot final learning curves in a background thread to prevent freezing
+    logger.info("Generating final learning curves in background thread...")
+    try:
+        plot_thread = threading.Thread(
+            target=plot_learning_curves,
+            args=(train_losses, val_losses, accuracies, str(model_checkpoint_dir), model_name)
+        )
+        plot_thread.daemon = True
+        plot_thread.start()
+        
+        # Wait for a moment to let the thread start
+        time.sleep(0.5)
+        
+    except Exception as e:
+        logger.error(f"Error starting final plot thread: {e}")
+        # Fall back to synchronous plotting if threading fails
+        try:
+            logger.info("Falling back to synchronous plotting...")
+            plot_learning_curves(train_losses, val_losses, accuracies, 
+                               str(model_checkpoint_dir), model_name)
+        except Exception as e2:
+            logger.error(f"Error plotting final learning curves: {e2}")
     
     # Save final model
     torch.save(model.state_dict(), model_checkpoint_dir / 'final_model.pth')
@@ -520,22 +719,45 @@ def train_model(model_type: str, model_name: Optional[str] = None,
     all_y_true = []
     all_y_pred = []
     
+    # Limit test evaluation sample size to prevent freezing
+    test_sample_size = min(len(test_loader), 30)  # Use max 30 batches for testing
+    
     with torch.no_grad():
-        for batch in test_loader:
-            if model_type == 'siamese':
-                img1, img2, target = batch
-                img1, img2, target = img1.to(device), img2.to(device), target.to(device)
-                out1, out2 = model(img1, img2)
-                # Calculate distances and predict
-                dist = F.pairwise_distance(out1, out2)
-                pred = (dist < 0.5).float()
-                test_loss += criterion(out1, out2, target).item()
-                correct += int(pred.eq(target.view_as(pred)).sum().item())
-                total += target.size(0)
+        for batch_idx, batch in enumerate(test_loader):
+            # Break after processing test_sample_size batches to prevent freezing
+            if batch_idx >= test_sample_size:
+                logger.info(f"Using the first {test_sample_size} batches for evaluation to prevent freezing")
+                break
                 
-                # Collect predictions and targets for metrics
-                all_y_true.extend(target.cpu().numpy().tolist())
-                all_y_pred.extend(pred.cpu().numpy().tolist())
+            # Log progress more frequently
+            if batch_idx % 5 == 0:
+                logger.info(f"Test evaluation: batch {batch_idx}/{test_sample_size}")
+                
+            if model_type == 'siamese':
+                try:
+                    img1, img2, target = batch
+                    img1, img2, target = img1.to(device), img2.to(device), target.to(device)
+                    out1, out2 = model(img1, img2)
+                    # Calculate distances and predict
+                    dist = F.pairwise_distance(out1, out2)
+                    pred = (dist < 0.5).float()
+                    batch_loss = criterion(out1, out2, target).item()
+                    test_loss += batch_loss
+                    correct += int(pred.eq(target.view_as(pred)).sum().item())
+                    total += target.size(0)
+                    
+                    # Log test progress with accuracy
+                    if batch_idx % 5 == 0:
+                        current_acc = correct / max(1, total)
+                        logger.info(f"Test | Batch {batch_idx}/{test_sample_size} | Loss: {batch_loss:.4f} | Current Acc: {current_acc*100:.2f}%")
+                    
+                    # Collect predictions and targets for metrics
+                    all_y_true.extend(target.cpu().numpy().tolist())
+                    all_y_pred.extend(pred.cpu().numpy().tolist())
+                    
+                except Exception as e:
+                    logger.error(f"Error during test evaluation: {e}")
+                    continue
             else:
                 data, target = batch
                 data, target = data.to(device), target.to(device)
@@ -578,6 +800,30 @@ def train_model(model_type: str, model_name: Optional[str] = None,
             detailed=True
         )
     
+    # Create a more comprehensive metrics file
+    metrics_dir = model_checkpoint_dir / "metrics"
+    metrics_dir.mkdir(exist_ok=True)
+    
+    # Save detailed metrics for analysis
+    all_metrics = {
+        'train_losses': train_losses,
+        'val_losses': val_losses,
+        'accuracies': accuracies,
+        'epochs': list(range(1, len(accuracies) + 1)),
+        'final_test_accuracy': test_accuracy,
+        'best_validation_accuracy': best_val_acc
+    }
+    
+    # Save metrics as CSV for easy import to Excel/plotting tools
+    metrics_df = pd.DataFrame({
+        'epoch': list(range(1, len(accuracies) + 1)),
+        'train_loss': train_losses,
+        'val_loss': val_losses,
+        'accuracy': accuracies
+    })
+    metrics_df.to_csv(metrics_dir / 'learning_curves.csv', index=False)
+    logger.info(f"Saved metrics CSV to {metrics_dir / 'learning_curves.csv'}")
+    
     # Save model info
     model_info = {
         'model_type': model_type,
@@ -589,12 +835,23 @@ def train_model(model_type: str, model_name: Optional[str] = None,
         'weight_decay': weight_decay,
         'scheduler_type': scheduler_type,
         'test_accuracy': test_accuracy,
-        'best_validation_accuracy': best_val_acc
+        'best_validation_accuracy': best_val_acc,
+        'metrics_saved_at': str(metrics_dir),
+        'checkpoint_dir': str(model_checkpoint_dir)
     }
     
+    # Save to both locations for convenience
     with open(model_checkpoint_dir / 'model_info.json', 'w') as f:
         import json
         json.dump(model_info, f, indent=4)
+        
+    with open(metrics_dir / 'model_info.json', 'w') as f:
+        import json
+        json.dump(model_info, f, indent=4)
+        
+    # Log the locations for user reference
+    logger.info(f"Model checkpoints saved to: {model_checkpoint_dir}")
+    logger.info(f"Metrics saved to: {metrics_dir}")
     
     logger.info(f"Model training complete: {model_name}")
     

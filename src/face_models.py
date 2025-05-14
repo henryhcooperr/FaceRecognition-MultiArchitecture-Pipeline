@@ -108,37 +108,57 @@ class SiameseNet(nn.Module):
         super().__init__()
         # Modified for 224x224 input images after testing
         self.conv = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=11, stride=4),  # Output: 54x54
+            nn.Conv2d(3, 64, kernel_size=10, stride=3),  # Adjusted kernel size/stride
             nn.BatchNorm2d(64), 
             nn.ReLU(),
-            nn.MaxPool2d(3, stride=2), 
+            nn.MaxPool2d(2, stride=2), 
             
             nn.Conv2d(64, 128, kernel_size=5, padding=2), 
             nn.BatchNorm2d(128), 
             nn.ReLU(),
-            nn.MaxPool2d(3, stride=2), 
+            nn.MaxPool2d(2, stride=2), 
             
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),  # Output: 12x12
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
             nn.BatchNorm2d(256), 
             nn.ReLU(),
-            nn.MaxPool2d(2, stride=2),  # Output: 6x6
+            nn.MaxPool2d(2, stride=2),
             
-            nn.Conv2d(256, 512, kernel_size=3, padding=1),  # Output: 6x6
+            nn.Conv2d(256, 512, kernel_size=3, padding=1),
             nn.BatchNorm2d(512), 
             nn.ReLU(),
+            nn.AdaptiveAvgPool2d((6, 6)),  # Use adaptive pooling instead of fixed size
         )
         
-        # had to calculate this manually - don't mess with these values!
+        # Calculate feature dimension based on adaptive pooling output
+        # This way we don't have to manually calculate the output size
         self.fc = nn.Sequential(
+            nn.Dropout(0.3),  # Add dropout for regularization
             nn.Linear(512 * 6 * 6, 1024),
             nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(1024, 256)
         )
+        
+        # Track intermediate shapes for debugging
+        self.debug_shapes = {}
 
     def forward_one(self, x):
+        # Store input shape for debugging
+        batch_size = x.size(0)
+        self.debug_shapes["input"] = x.shape
+        
+        # Apply convolutional layers
         feats = self.conv(x)
-        feats = feats.view(feats.size(0), -1)  # Flatten
+        self.debug_shapes["after_conv"] = feats.shape
+        
+        # Flatten
+        feats = feats.view(batch_size, -1)
+        self.debug_shapes["flattened"] = feats.shape
+        
+        # Apply fully connected layers
         feats = self.fc(feats)
+        self.debug_shapes["before_norm"] = feats.shape
+        
         # Add L2 normalization to embedding outputs
         feats = F.normalize(feats, p=2, dim=1)
         return feats
@@ -150,6 +170,10 @@ class SiameseNet(nn.Module):
 
     def get_embedding(self, x):
         return self.forward_one(x)
+        
+    def get_debug_info(self):
+        """Return debug information including layer shapes."""
+        return self.debug_shapes
 
 class SpatialAttention(nn.Module):
     """Spatial attention module to complement channel attention"""
@@ -435,22 +459,49 @@ class ContrastiveLoss(nn.Module):
         super().__init__()
         self.margin = margin  # increased from 1.0 after seeing poor separation
         self.eps = 1e-8  # Small epsilon for numerical stability
+        # Track loss components for debugging
+        self.last_dist = None
+        self.positive_loss = None
+        self.negative_loss = None
 
     def forward(self, out1, out2, label):
         # Ensure vectors are normalized for more stable distance calculation
+        # They should already be normalized in the forward_one method, but let's be safe
         out1 = F.normalize(out1, p=2, dim=1)
         out2 = F.normalize(out2, p=2, dim=1)
         
         # Calculate pairwise distance
         dist = F.pairwise_distance(out1, out2)
+        self.last_dist = dist.detach().cpu()
         
         # Apply margin more carefully
         dist = torch.clamp(dist, min=self.eps)  # Ensure non-zero distance for stability
         
-        # Calculate loss with more robust margin handling
-        loss = torch.mean((1-label) * torch.pow(dist, 2) +
-                         label * torch.pow(torch.clamp(self.margin - dist, min=0.0), 2))
+        # Calculate positive and negative parts separately for debugging
+        negative_part = (1-label) * torch.pow(dist, 2)  # Similar pairs (label=0): minimize distance
+        positive_part = label * torch.pow(torch.clamp(self.margin - dist, min=0.0), 2)  # Dissimilar pairs (label=1): increase distance until margin
+        
+        # Store for debugging
+        self.positive_loss = positive_part.mean().item()
+        self.negative_loss = negative_part.mean().item()
+        
+        # Final loss
+        loss = torch.mean(negative_part + positive_part)
+        
+        # Log statistics in every 20th batch
+        if torch.rand(1).item() < 0.05:  # Log randomly with 5% probability to avoid flooding
+            print(f"ContrastiveLoss stats - Margin: {self.margin}, Mean dist: {dist.mean().item():.4f}, "
+                  f"Positive loss: {self.positive_loss:.4f}, Negative loss: {self.negative_loss:.4f}")
+            
         return loss
+        
+    def get_debug_info(self):
+        """Return debug information about the loss components."""
+        return {
+            "last_dist": self.last_dist,
+            "positive_loss": self.positive_loss,
+            "negative_loss": self.negative_loss
+        }
 
 # Function to get the requested model type
 def get_model(model_type: str, num_classes: int = 18, input_size: Tuple[int, int] = (224, 224)) -> nn.Module:

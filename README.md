@@ -245,9 +245,6 @@ Combines convolutional layers with transformer blocks for improved performance.
 ### Ensemble Model
 Combines multiple models for improved accuracy through model averaging.
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Acknowledgments
 

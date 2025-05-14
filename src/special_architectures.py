@@ -130,7 +130,7 @@ class ArcFaceTrainer:
         # Set up optimizer
         optimizer = optim.Adam(self.model.parameters(), lr=self.config.learning_rate)
         
-        # Set up learning rate scheduler if requested
+        # Set up learning rate scheduler
         scheduler = None
         if hasattr(self.config, 'lr_scheduler_type') and self.config.lr_scheduler_type != 'none':
             from .training_utils import get_scheduler
@@ -143,7 +143,7 @@ class ArcFaceTrainer:
                 **scheduler_params
             )
         
-        # Set up early stopping if requested
+
         early_stopping = None
         if hasattr(self.config, 'use_early_stopping') and self.config.use_early_stopping:
             from .training_utils import EarlyStopping
