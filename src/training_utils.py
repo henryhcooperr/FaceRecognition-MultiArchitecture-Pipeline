@@ -337,7 +337,7 @@ class SimpleResultsManager:
             json.dump(metrics, f, indent=2)
     
     def record_learning_curves(self, train_losses: List[float], val_losses: List[float], val_accuracies: List[float]):
-        """Record and plot learning curves."""
+        """Record learning curves data without plotting."""
         # Save the raw data
         curves_data = {
             "train_losses": train_losses,
@@ -347,13 +347,19 @@ class SimpleResultsManager:
         
         with open(self.metrics_dir / "learning_curves.json", 'w') as f:
             json.dump(curves_data, f, indent=2)
+            
+        # Also save as CSV for easier analysis
+        epochs = list(range(1, len(train_losses) + 1))
+        df = pd.DataFrame({
+            'epoch': epochs,
+            'train_loss': train_losses,
+            'val_loss': val_losses,
+            'accuracy': val_accuracies
+        })
+        df.to_csv(self.metrics_dir / "learning_curves.csv", index=False)
         
-        # Plot learning curves using pyplot
-        from .training import plot_learning_curves
-        plot_learning_curves(
-            train_losses, val_losses, val_accuracies,
-            str(self.output_dir), "model"
-        )
+        # Log that we're skipping plotting
+        logger.info("Plotting is disabled; learning curve data saved as CSV and JSON")
     
     def save_model_checkpoint(self, model, optimizer, epoch, is_best=False, 
                             scheduler=None, metrics=None):
@@ -388,17 +394,40 @@ class SimpleResultsManager:
             json.dump(cm_data, f, indent=2)
     
     def record_per_class_metrics(self, y_true, y_pred, y_score, class_names):
-        """Record per-class metrics."""
-        from .advanced_metrics import calculate_per_class_metrics
-        metrics = calculate_per_class_metrics(y_true, y_pred, y_score, class_names)
+        """Record basic per-class metrics without detailed calculation."""
+        # Calculate basic per-class metrics directly
+        from sklearn.metrics import precision_score, recall_score, f1_score
         
+        precision = precision_score(y_true, y_pred, average=None, zero_division=0)
+        recall = recall_score(y_true, y_pred, average=None, zero_division=0)
+        f1 = f1_score(y_true, y_pred, average=None, zero_division=0)
+        
+        # Create a simplified metrics dictionary
+        metrics = {}
+        for i, cls in enumerate(class_names):
+            if i < len(precision):
+                metrics[cls] = {
+                    "precision": float(precision[i]),
+                    "recall": float(recall[i]),
+                    "f1": float(f1[i])
+                }
+        
+        # Save the simplified metrics
         with open(self.metrics_dir / "per_class_metrics.json", 'w') as f:
             json.dump(metrics, f, indent=2)
+        
+        logger.info("Saved simplified per-class metrics (detailed metrics disabled)")
     
     def record_calibration_metrics(self, y_true, y_pred, y_score):
-        """Record calibration metrics."""
-        from .advanced_metrics import expected_calibration_error
-        metrics = expected_calibration_error(y_true, y_pred, y_score)
+        """Record stub calibration metrics as feature is disabled."""
+        # Create a placeholder/stub metrics dictionary
+        metrics = {
+            "expected_calibration_error": 0.0,
+            "maximum_calibration_error": 0.0,
+            "note": "Detailed calibration metrics are disabled in this simplified branch"
+        }
         
         with open(self.metrics_dir / "calibration_metrics.json", 'w') as f:
             json.dump(metrics, f, indent=2)
+            
+        logger.info("Saved placeholder calibration metrics (detailed metrics disabled)")

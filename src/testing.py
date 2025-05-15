@@ -4,9 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-import seaborn as sns
 import pandas as pd
 import cv2
 import time
@@ -24,7 +21,7 @@ import os
 from .base_config import PROC_DATA_DIR, CHECKPOINTS_DIR, OUT_DIR, logger, check_gpu
 from .face_models import get_model, MODEL_TYPES
 from .data_utils import SiameseDataset  # Updated import to use data_utils
-from .advanced_metrics import plot_confusion_matrix, create_enhanced_confusion_matrix, calculate_per_class_metrics
+from .advanced_metrics import plot_confusion_matrix, create_enhanced_confusion_matrix
 
 def evaluate_model(model_type: str, model_name: Optional[str] = None, auto_dataset: bool = False):
     """Evaluate a trained model with comprehensive metrics."""
@@ -397,9 +394,9 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None, auto_datas
     logger.info(f"Saved experiment summary to {summary_file}")
     
     # Generate visualizations
-    logger.info("Generating visualizations...")
+    logger.info("Skipping visualizations as plotting features are disabled")
     
-    # Plot confusion matrix
+    # Calculate confusion matrix but skip plotting
     plot_confusion_matrix(
         y_true=all_targets, 
         y_pred=all_predictions, 
@@ -409,48 +406,37 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None, auto_datas
         detailed=True  # Use detailed view with per-class metrics
     )
     
-    # Plot ROC curve
-    plt.figure(figsize=(8, 6))
-    if model_type == 'siamese':
-        plt.plot(fpr, tpr, label=f'ROC curve (AUC = {roc_auc:.2f})')
-    else:
-        # Convert to numpy array explicitly for slicing
-        all_probs_np = np.array(all_probs)
-        for i in range(len(class_names)):
-            fpr, tpr, _ = roc_curve(all_targets == i, all_probs_np[:, i])
-            plt.plot(fpr, tpr, label=f'{class_names[i]} (AUC = {auc(fpr, tpr):.2f})')
-    plt.plot([0, 1], [0, 1], 'k--')
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC Curves')
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.tight_layout()
-    plt.savefig(model_viz_dir / 'roc_curves.png')
-    plt.close()
+    # Log ROC curve metrics without plotting
+    logger.info(f"ROC AUC: {roc_auc:.4f}")
     
-    # Plot Precision-Recall curve
-    plt.figure(figsize=(8, 6))
-    if model_type == 'siamese':
-        plt.plot(recall_curve, precision_curve, label=f'PR curve (AUC = {pr_auc:.2f})')
-    else:
-        # Convert to numpy array explicitly for slicing
-        all_probs_np = np.array(all_probs)
-        for i in range(len(class_names)):
-            precision_i, recall_i, _ = precision_recall_curve(all_targets == i, all_probs_np[:, i])
-            plt.plot(recall_i, precision_i, label=f'{class_names[i]} (AUC = {average_precision_score(all_targets == i, all_probs_np[:, i]):.2f})')
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title('Precision-Recall Curves')
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.tight_layout()
-    plt.savefig(model_viz_dir / 'pr_curves.png')
-    plt.close()
+    # Log PR curve metrics without plotting
+    logger.info(f"PR AUC: {pr_auc:.4f}")
     
-    # For siamese networks, also create a person-by-person confusion matrix if we have identity info
+    # Save curve data to CSV for later reference if needed
+    if model_type == 'siamese':
+        roc_df = pd.DataFrame({
+            'fpr': fpr,
+            'tpr': tpr,
+            'auc': roc_auc
+        })
+        pr_df = pd.DataFrame({
+            'precision': precision_curve,
+            'recall': recall_curve,
+            'auc': pr_auc
+        })
+        roc_df.to_csv(model_viz_dir / 'roc_curve_data.csv', index=False)
+        pr_df.to_csv(model_viz_dir / 'pr_curve_data.csv', index=False)
+    else:
+        # For multi-class, just save the overall metrics
+        # without the detailed curve data
+        metrics_df = pd.DataFrame({
+            'class': class_names,
+            'roc_auc': [roc_auc] * len(class_names),
+            'pr_auc': [pr_auc] * len(class_names)
+        })
+        metrics_df.to_csv(model_viz_dir / 'curve_metrics.csv', index=False)
+    
+    # For siamese networks, calculate person-by-person metrics without visualization
     if model_type == 'siamese' and 'all_identities_1' in locals() and all_identities_1 and len(all_identities_1) > 0:
         # Get unique identities as a sorted list
         unique_identities = sorted(set(all_identities_1 + all_identities_2))
@@ -496,41 +482,26 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None, auto_datas
                 identity_rates = np.divide(identity_cm, identity_counts)
                 identity_rates = np.nan_to_num(identity_rates)  # Replace NaN with 0
             
-            # Plot person-by-person recognition rate matrix
-            plt.figure(figsize=(15, 12))
-            sns.heatmap(identity_rates, annot=True, fmt='.2f', cmap='viridis',
-                        xticklabels=unique_identities,
-                        yticklabels=unique_identities)
-            plt.title('Person-by-Person Recognition Rate')
-            plt.xlabel('Person')
-            plt.ylabel('Person')
-            plt.xticks(rotation=45, ha='right')
-            plt.tight_layout()
-            plt.savefig(model_viz_dir / 'person_recognition_matrix.png')
-            plt.close()
+            # Save identity recognition rates to CSV
+            person_rates_df = pd.DataFrame(identity_rates, 
+                                        index=unique_identities, 
+                                        columns=unique_identities)
+            person_rates_df.to_csv(model_viz_dir / 'person_recognition_rates.csv')
             
-            # Also create a more compact visualization showing per-person performance
+            # Calculate and save per-person performance
             per_person_accuracy = np.diag(identity_rates)
+            person_accuracy_df = pd.DataFrame({
+                'person': unique_identities,
+                'accuracy': per_person_accuracy,
+            })
+            person_accuracy_df.to_csv(model_viz_dir / 'per_person_accuracy.csv', index=False)
             
-            plt.figure(figsize=(12, 8))
-            bars = plt.bar(unique_identities, per_person_accuracy)
-            plt.title('Recognition Accuracy per Person')
-            plt.xlabel('Person')
-            plt.ylabel('Accuracy')
-            plt.xticks(rotation=45, ha='right')
-            plt.ylim(0, 1.0)
-            plt.axhline(y=np.mean(per_person_accuracy), color='r', linestyle='--', label=f'Average: {np.mean(per_person_accuracy):.2f}')
-            plt.legend()
-            plt.tight_layout()
-            plt.savefig(model_viz_dir / 'per_person_accuracy.png')
-            plt.close()
+            # Log average per-person accuracy
+            avg_person_accuracy = np.mean(per_person_accuracy)
+            logger.info(f"Average per-person accuracy: {avg_person_accuracy:.4f}")
     
-    # Generate Grad-CAM visualizations
-    logger.info("Generating Grad-CAM visualizations...")
-    try:
-        plot_gradcam_visualization(model, test_dataset, 5, str(model_viz_dir), model_name)
-    except Exception as e:
-        logger.error(f"Failed to generate Grad-CAM visualizations: {str(e)}")
+    # No visualization in this branch
+    logger.info("Visualization features are disabled in this simplified branch")
     
     # Return metrics dictionary
     return {
@@ -545,479 +516,18 @@ def evaluate_model(model_type: str, model_name: Optional[str] = None, auto_datas
 
 def calculate_detailed_metrics(all_targets, all_predictions, all_probs, class_names):
     """Calculate detailed performance metrics for model evaluation."""
-    # ...
+    # For the stub implementation, we'll assume these variables are defined elsewhere
+    accuracy = 0.0
+    roc_auc = 0.0
+    pr_auc = 0.0
+    avg_inference_time = 0.0
+    
     return {
         'accuracy': accuracy,
         'roc_auc': roc_auc,
         'pr_auc': pr_auc,
         'inference_time': avg_inference_time
     }
-
-def plot_roc_curves(y_true: np.ndarray, y_score: np.ndarray, 
-                   classes: List[str], output_dir: str, model_name: str):
-    """Plot ROC curves for each class."""
-    plt.figure(figsize=(12, 8))
-    
-    # Compute ROC curve and ROC area for each class
-    fpr = dict()
-    tpr = dict()
-    roc_auc = dict()
-    
-    for i in range(len(classes)):
-        fpr[i], tpr[i], _ = roc_curve(y_true == i, y_score[:, i])
-        roc_auc[i] = auc(fpr[i], tpr[i])
-        plt.plot(fpr[i], tpr[i], label=f'{classes[i]} (AUC = {roc_auc[i]:.2f})')
-    
-    plt.plot([0, 1], [0, 1], 'k--')
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC Curves per Class')
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.tight_layout()
-    plt.savefig(Path(output_dir) / model_name / 'roc_curves.png')
-    plt.close()
-
-def generate_gradcam(model: nn.Module, image_tensor: torch.Tensor, 
-                   target_layer: nn.Module, model_type: Optional[str] = None) -> np.ndarray:
-    """Generate Grad-CAM visualization for a given image and model."""
-    # Ensure image_tensor is a single image (add batch dimension if needed)
-    if len(image_tensor.shape) == 3:
-        image_tensor = image_tensor.unsqueeze(0)  # Add batch dimension
-        
-    # Set model to eval mode and register hooks
-    model.eval()
-    
-    # Storage for activations and gradients
-    activations = []
-    gradients = []
-    
-    def forward_hook(module, input, output):
-        activations.append(output)
-    
-    def backward_hook(module, grad_input, grad_output):
-        gradients.append(grad_output[0])
-    
-    # Register hooks using the full backward hook
-    handle1 = target_layer.register_forward_hook(forward_hook)
-    handle2 = target_layer.register_full_backward_hook(backward_hook)
-    
-    try:
-        logger.info(f"Generating Grad-CAM with model type: {model_type}")
-        
-        # Forward pass
-        if model_type == 'siamese':
-            # For Siamese network, we use the same image as both inputs
-            output1, output2 = model(image_tensor, image_tensor)
-            output = torch.pairwise_distance(output1, output2)  # Calculate distance
-        else:
-            try:
-                output = model(image_tensor)
-                logger.info(f"Model output shape: {output.shape if isinstance(output, torch.Tensor) else 'not a tensor'}")
-            except Exception as e:
-                logger.error(f"Error in model forward pass: {str(e)}")
-                return np.zeros((224, 224), dtype=np.float32)
-        
-        if isinstance(output, tuple):
-            output = output[0]
-            logger.info("Output was a tuple, using first element")
-        
-        # If output doesn't have a batch dimension or is not a tensor with values,
-        # we can't compute gradients - return empty heatmap
-        if not isinstance(output, torch.Tensor) or output.numel() == 0:
-            logger.error("Output is not a valid tensor or has no elements")
-            return np.zeros((224, 224), dtype=np.float32)
-            
-
-        if model_type == 'siamese':
-            score = output  # Use distance as score for siamese
-            logger.info(f"Using distance as score for siamese model")
-        else:
-            # For classification models, use the predicted class's score
-            score = torch.max(output) if output.numel() > 0 else None
-            logger.info(f"Using max score for classification: {score.item() if score is not None else 'None'}")
-        
-        if score is None:
-            logger.error("Could not compute score from output")
-            return np.zeros((224, 224), dtype=np.float32)
-        
-        # Backward pass
-        model.zero_grad()
-        try:
-            score.backward()
-        except Exception as e:
-            logger.error(f"Error in backward pass: {str(e)}")
-            return np.zeros((224, 224), dtype=np.float32)
-        
-        # Check if we got any gradients
-        if not gradients or len(gradients) == 0:
-            logger.error("No gradients captured by hook")
-            return np.zeros((224, 224), dtype=np.float32)
-            
-        # Get activations and gradients
-        activation = activations[0].detach()
-        gradient = gradients[0].detach()
-        
-        logger.info(f"Activation shape: {activation.shape}, Gradient shape: {gradient.shape}")
-        
-        # Global average pooling of gradients
-        weights = torch.mean(gradient, dim=(2, 3), keepdim=True)
-        
-        # Weight the activations
-        cam = torch.sum(weights * activation, dim=1, keepdim=True)
-        cam = F.relu(cam)  # Apply ReLU
-        
-        # Normalize
-        cam = F.interpolate(cam, size=(224, 224), mode='bilinear', align_corners=False)
-        cam = cam - cam.min()
-        if cam.max() > 1e-8: 
-            cam = cam / (cam.max() + 1e-8)
-        else:
-            logger.warning("CAM has very small values, may result in poor visualization")
-        
-
-        cam_np = cam.squeeze().cpu().numpy()
-        logger.info(f"Generated CAM with shape: {cam_np.shape}")
-        
-
-        if len(cam_np.shape) > 2:
-            # If it has more than 2 dimensions, take the first channel
-            cam_np = cam_np[0]
-            logger.info(f"Adjusted CAM shape to 2D: {cam_np.shape}")
-        
-        return cam_np
-    
-    except Exception as e:
-        logger.error(f"Error generating Grad-CAM: {str(e)}")
-        # Return an empty heatmap instead of None
-        return np.zeros((224, 224), dtype=np.float32)
-    
-    finally:
-        # Clean up hooks
-        handle1.remove()
-        handle2.remove()
-
-def plot_gradcam_visualization(model: nn.Module, images, 
-                             num_samples: int, output_dir: str, model_name: str):
-    """
-    Plot Grad-CAM visualizations for sample images.
-    
-    Args:
-        model: The model to visualize
-        images: Either a dataset or a tensor of images
-        num_samples: Maximum number of samples to visualize (will be capped at 5)
-        output_dir: Directory to save visualizations
-        model_name: Name of the model for file naming
-    """
-    device = next(model.parameters()).device
-    
-    # Limit to 5 samples maximum
-    num_samples = min(5, num_samples)
-    
-    # Get target layer based on model type
-    target_layer = None
-    model_type = None
-    
-    logger.info(f"Finding target layer for model: {model_name}")
-    
-    # Log model architecture to help with debugging
-    logger.info(f"Model architecture: {model.__class__.__name__}")
-    top_level_attributes = [attr for attr in dir(model) if not attr.startswith('_') and not callable(getattr(model, attr))]
-    logger.info(f"Top-level model attributes: {top_level_attributes}")
-    
-    if hasattr(model, 'models') and isinstance(model.models, nn.ModuleList):
-        # This is an ensemble model, use the first model's layer
-        if len(model.models) > 0 and hasattr(model.models[0], 'resnet'):
-            target_layer = model.models[0].resnet.layer4[-1]
-            model_type = 'ensemble'
-            logger.info("Using ensemble model's first model's resnet.layer4[-1]")
-        elif len(model.models) > 0 and hasattr(model.models[0], 'features'):
-            target_layer = model.models[0].features[-1]
-            model_type = 'ensemble'
-            logger.info("Using ensemble model's first model's features[-1]")
-    elif hasattr(model, 'resnet'):
-        target_layer = model.resnet.layer4[-1]
-        model_type = 'cnn'
-        logger.info("Using resnet.layer4[-1] as target layer")
-    elif 'cnn' in model_name.lower() or ('baseline' not in model_name.lower() and hasattr(model, 'layer4')):
-        # Direct ResNet structure or CNN model
-        target_layer = model.layer4[-1] if hasattr(model, 'layer4') else None
-        model_type = 'cnn'
-        logger.info("Using layer4[-1] as target layer (direct ResNet structure)")
-    elif hasattr(model, 'conv3'):
-        target_layer = model.conv3
-        model_type = 'baseline'
-        logger.info("Using conv3 as target layer (baseline model)")
-    elif hasattr(model, 'conv'):
-        if isinstance(model.conv, nn.ModuleList) or isinstance(model.conv, list):
-            target_layer = model.conv[-3]  # Last conv layer
-            logger.info("Using conv[-3] as target layer (siamese model)")
-        else:
-            target_layer = model.conv
-            logger.info("Using conv as target layer (siamese model)")
-        model_type = 'siamese'
-    elif hasattr(model, 'attention_layers') and len(model.attention_layers) > 0:
-        target_layer = model.attention_layers[-1]
-        model_type = 'attention'
-        logger.info("Using attention_layers[-1] as target layer")
-    else:
-        logger.warning(f"Could not determine target layer for Grad-CAM for model type: {model_name}")
-        # Use a fallback approach - look for any convolutional layer
-        found_layer = False
-        # First try to find the last convolutional layer
-        last_conv = None
-        for name, module in model.named_modules():
-            if isinstance(module, nn.Conv2d):
-                last_conv = module
-                logger.info(f"Found conv layer: {name}")
-        
-        if last_conv is not None:
-            target_layer = last_conv
-            model_type = 'unknown'
-            found_layer = True
-            logger.info(f"Using last found Conv2d layer as target layer for Grad-CAM")
-        else:
-            # If still no convolutional layer found
-            for name, module in model.named_modules():
-                if isinstance(module, nn.Conv2d):
-                    target_layer = module
-                    model_type = 'unknown'
-                    found_layer = True
-                    logger.info(f"Using {name} as target layer for Grad-CAM")
-                    break
-        
-        if not found_layer:
-            logger.error(f"No suitable layer found for Grad-CAM visualization")
-            return
-    
-    # Verify target layer was found
-    if target_layer is None:
-        logger.error("Target layer is None, cannot generate Grad-CAM")
-        return
-    
-    logger.info(f"Using target layer: {target_layer.__class__.__name__} for model type: {model_type}")
-    
-    # Create standard output directories matching experiment_manager's structure
-    output_path = Path(output_dir)
-    
-    # Ensure standard plots directory exists (important for consistent structure)
-    plots_dir = output_path / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Create resources directory (where your screenshot shows visualizations)
-    resources_dir = plots_dir / "resources"
-    resources_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Also create model_name directory for backward compatibility
-    if model_name and model_name.strip():
-        model_dir = output_path / model_name
-        model_dir.mkdir(parents=True, exist_ok=True)
-    
-    logger.info(f"Saving visualizations to multiple locations for compatibility:")
-    logger.info(f"1. {resources_dir}")
-    logger.info(f"2. {plots_dir}")
-    if model_name and model_name.strip():
-        logger.info(f"3. {model_dir}")
-    
-    # Create figure for visualization
-    fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5*num_samples))
-    if num_samples == 1:
-        axes = axes.reshape(1, -1)
-    
-    successful_samples = 0
-    max_attempts = num_samples * 3  # Try up to 3 times the number of samples
-    attempts = 0
-    
-    # Create a dataset iterator if passed a dataloader or dataset
-    if hasattr(images, 'dataset'):  # DataLoader
-        dataset = images.dataset
-    elif torch.is_tensor(images):  # Tensor of images
-        # Process each image in the batch individually
-        for i in range(min(num_samples, images.size(0))):
-            try:
-                image_tensor = images[i:i+1].to(device)  # Keep batch dimension but just one image
-                
-                # Generate Grad-CAM
-                if target_layer is not None:
-                    cam = generate_gradcam(model, image_tensor, target_layer, model_type)
-                else:
-                    # If target layer is None, return empty heatmap
-                    cam = np.zeros((224, 224), dtype=np.float32)
-                
-                # Convert tensor to numpy for plotting (remove batch dimension)
-                img_np = images[i].permute(1, 2, 0).cpu().numpy()
-                img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])).clip(0, 1)
-                
-                # Plot original image
-                axes[successful_samples, 0].imshow(img_np)
-                axes[successful_samples, 0].set_title('Original Image')
-                axes[successful_samples, 0].axis('off')
-                
-                # Plot heatmap
-                axes[successful_samples, 1].imshow(cam, cmap='jet')
-                axes[successful_samples, 1].set_title('Grad-CAM Heatmap')
-                axes[successful_samples, 1].axis('off')
-                
-                # Plot overlay - ensure cam and img_np have compatible shapes
-                if cam.shape[:2] != img_np.shape[:2]:
-                    cam_resized = cv2.resize(cam, (img_np.shape[1], img_np.shape[0]))
-                else:
-                    cam_resized = cam
-                
-                # Create heatmap
-                heatmap = cv2.applyColorMap(np.uint8(255 * cam_resized), 2)  # 2 is COLORMAP_JET
-                heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-                
-                # Ensure shapes match for overlay
-                if heatmap.shape[:2] != img_np.shape[:2]:
-                    logger.warning(f"Shape mismatch: heatmap {heatmap.shape}, image {img_np.shape}")
-                    # Resize heatmap to match image
-                    heatmap = cv2.resize(heatmap, (img_np.shape[1], img_np.shape[0]))
-                
-                # Create overlay by properly broadcasting the shapes
-                if len(img_np.shape) == 3 and len(heatmap.shape) == 3:
-                    overlay = (0.7 * img_np + 0.3 * heatmap/255).clip(0, 1)
-                    axes[successful_samples, 2].imshow(overlay)
-                else:
-                    # If shapes are incompatible, show just the heatmap
-                    axes[successful_samples, 2].imshow(heatmap/255)
-                
-                axes[successful_samples, 2].set_title('Overlay')
-                axes[successful_samples, 2].axis('off')
-                
-                successful_samples += 1
-                if successful_samples >= num_samples:
-                    break
-                    
-            except Exception as e:
-                logger.error(f"Error processing image tensor {i}: {str(e)}")
-                continue
-                
-        # Save the figure with the samples we've processed
-        if successful_samples > 0:
-            # If we didn't fill all rows, remove empty subplots
-            if successful_samples < num_samples:
-                for i in range(successful_samples, num_samples):
-                    for j in range(3):
-                        fig.delaxes(axes[i, j])
-            
-            plt.tight_layout()
-            viz_file1 = resources_dir / 'gradcam_visualization.png'
-            plt.savefig(viz_file1)
-            logger.info(f"Saved visualizations to {viz_file1}")
-            
-            # Save to model name directory for backward compatibility
-            if model_name and model_name.strip():
-                viz_file2 = model_dir / 'gradcam_visualization.png'
-                plt.savefig(viz_file2)
-                logger.info(f"Saved visualizations to {viz_file2}")
-            
-            plt.close()
-            
-            # Return success with clear path info
-            logger.info(f"Successfully saved Grad-CAM visualizations to multiple locations for compatibility")
-            return
-            
-        # If we couldn't process any images in the tensor, show error
-        logger.error("Failed to generate any Grad-CAM visualizations from tensor")
-        return
-    
-    # If we have a dataset, sample from it
-    else:
-        dataset = images
-        while successful_samples < num_samples and attempts < max_attempts:
-            attempts += 1
-            try:
-                # Get random sample
-                idx = random.randint(0, len(dataset)-1)
-                
-                # Handle different dataset types
-                if hasattr(dataset, 'imgs'):
-                    # Standard ImageFolder dataset
-                    image_path, label = dataset.imgs[idx]
-                    image = dataset[idx][0]
-                elif hasattr(dataset, 'images'):
-                    # Siamese dataset
-                    img1, _, _ = dataset[idx]
-                    image = img1
-                else:
-                    logger.warning("Unknown dataset format")
-                    continue
-                
-                # Convert to tensor and add batch dimension
-                img_tensor = image.unsqueeze(0).to(device)
-                
-                # Generate Grad-CAM
-                if target_layer is not None:
-                    cam = generate_gradcam(model, img_tensor, target_layer, model_type)
-                else:
-                    # If target layer is None, return empty heatmap
-                    cam = np.zeros((224, 224), dtype=np.float32)
-                
-                # Convert tensor to numpy for plotting
-                img_np = image.permute(1, 2, 0).cpu().numpy()
-                img_np = (img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])).clip(0, 1)
-                
-                # Plot original image
-                axes[successful_samples, 0].imshow(img_np)
-                axes[successful_samples, 0].set_title('Original Image')
-                axes[successful_samples, 0].axis('off')
-                
-                # Plot heatmap
-                axes[successful_samples, 1].imshow(cam, cmap='jet')
-                axes[successful_samples, 1].set_title('Grad-CAM Heatmap')
-                axes[successful_samples, 1].axis('off')
-                
-                # Plot overlay - ensure cam and img_np have compatible shapes
-                if cam.shape[:2] != img_np.shape[:2]:
-                    cam_resized = cv2.resize(cam, (img_np.shape[1], img_np.shape[0]))
-                else:
-                    cam_resized = cam
-                
-                # Create heatmap
-                heatmap = cv2.applyColorMap(np.uint8(255 * cam_resized), 2)  # 2 is COLORMAP_JET
-                heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-                
-                # Create overlay
-                overlay = (0.7 * img_np + 0.3 * heatmap/255).clip(0, 1)
-                
-                axes[successful_samples, 2].imshow(overlay)
-                axes[successful_samples, 2].set_title('Overlay')
-                axes[successful_samples, 2].axis('off')
-                
-                successful_samples += 1
-                
-            except Exception as e:
-                logger.error(f"Error processing sample {idx}: {str(e)}")
-                continue
-    
-    # Save or display error message
-    if successful_samples == 0:
-        logger.error("Failed to generate any Grad-CAM visualizations")
-        return
-    
-    # If we didn't fill all rows, remove empty subplots
-    if successful_samples < num_samples:
-        for i in range(successful_samples, num_samples):
-            for j in range(3):
-                fig.delaxes(axes[i, j])
-    
-    plt.tight_layout()
-    viz_file1 = resources_dir / 'gradcam_visualization.png'
-    plt.savefig(viz_file1)
-    logger.info(f"Saved visualizations to {viz_file1}")
-    
-    # Save to model name directory for backward compatibility
-    if model_name and model_name.strip():
-        viz_file2 = model_dir / 'gradcam_visualization.png'
-        plt.savefig(viz_file2)
-        logger.info(f"Saved visualizations to {viz_file2}")
-    
-    plt.close()
-    
-    # Return success with clear path info
-    logger.info(f"Successfully saved Grad-CAM visualizations to multiple locations for compatibility")
 
 def predict_image(model_type: str, image_path: str, model_name: Optional[str] = None) -> Tuple[str, float]:
     """Make a prediction for a single image."""
@@ -1083,4 +593,4 @@ def predict_image(model_type: str, image_path: str, model_name: Optional[str] = 
         probs = F.softmax(outputs, dim=1)
         prob, pred_idx = torch.max(probs, 1)
         
-    return classes[pred_idx.item()], prob.item() 
+    return classes[pred_idx.item()], prob.item()

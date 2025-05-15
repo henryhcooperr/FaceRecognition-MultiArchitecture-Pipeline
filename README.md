@@ -89,10 +89,44 @@ This launches the interactive menu where you can:
 ### Live Demo
 
 ```
-python run.py demo
+python run_app.py --browser
 ```
 
-Launches the live face recognition demo using your webcam.
+Launches the interactive Streamlit face recognition demo using your webcam. The enhanced demo includes:
+
+- 🎥 Real-time face detection using MTCNN
+- 👤 Face recognition with FaceNet embeddings
+- ➕ Easy interface to add new faces to the recognition system
+- 🔄 Face tracking between frames for stable recognition
+- 📝 Edit and manage known faces
+- 📊 Recognition history tracking
+- 🔧 Automatic prompt for unrecognized faces
+
+#### Command Line Options
+
+- `--browser`: Automatically open the app in a browser
+- `--port`: Specify a port number (default: 8501)
+
+Example:
+```bash
+python run_app.py --browser --port=8502
+```
+
+#### Interface
+
+The application has three main tabs in the sidebar:
+
+1. **Controls**: Start/stop webcam and adjust recognition settings
+2. **Faces**: Add, edit and view known faces
+3. **History**: View recognition history
+
+#### How to Use
+
+1. Start the webcam using the "Start Webcam" button in the Controls tab
+2. When a face is detected but not recognized, you'll be prompted to add it
+3. Enter a name for the detected face and click "Save"
+4. The face will now be recognized in future frames
+5. Use the edit buttons (✏️) next to known faces to update or delete them
 
 ### Cross-Validation
 

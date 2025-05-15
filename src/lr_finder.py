@@ -5,7 +5,6 @@ import itertools
 import numpy as np
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
 from pathlib import Path
 from typing import Tuple, List, Optional, Dict, Any
@@ -25,13 +24,29 @@ class LearningRateFinder:
                  end_lr: float = 10.0,
                  num_iterations: int = 100,
                  diverge_threshold: float = 4.0,
-                 save_dir: Optional[Path] = None):
+                 save_dir: Optional[Path] = None,
+                 model_type: Optional[str] = None):
         self.model = model
         self.criterion = criterion
         self.optimizer = optimizer
         self.device = device
-        self.start_lr = start_lr
-        self.end_lr = end_lr
+        self.model_type = model_type
+        
+        # Adjust LR range based on model type
+        if model_type == 'arcface':
+            # ArcFace needs much lower learning rates
+            self.start_lr = start_lr
+            self.end_lr = min(end_lr, 0.01)  # Cap at 0.01
+            self.diverge_threshold = 2.0  # Lower threshold for earlier detection
+        elif model_type == 'siamese':
+            # Siamese also needs careful LR tuning
+            self.start_lr = start_lr
+            self.end_lr = min(end_lr, 0.1)  # Cap at 0.1
+        else:
+            # Default values for other models
+            self.start_lr = start_lr
+            self.end_lr = end_lr
+            
         self.num_iterations = num_iterations
         self.diverge_threshold = diverge_threshold
         self.save_dir = save_dir
@@ -71,9 +86,17 @@ class LearningRateFinder:
         self.model.train()
         
         try:
-            # Run the learning rate finder
-            for iteration, batch in enumerate(itertools.islice(
-                    itertools.cycle(train_loader), self.num_iterations)):
+            # Create progress bar for learning rate finder iterations
+            from tqdm.auto import tqdm
+            pbar = tqdm(range(self.num_iterations), desc="LR Finder", leave=False)
+            
+            # Generator for batches - using islice to limit iterations
+            batch_generator = itertools.islice(itertools.cycle(train_loader), self.num_iterations)
+            
+            # Run the learning rate finder with progress bar
+            for iteration in pbar:
+                # Get the next batch
+                batch = next(batch_generator)
                 
                 # Handle different batch formats
                 if isinstance(batch, (tuple, list)):
@@ -154,7 +177,11 @@ class LearningRateFinder:
                 if loss.item() < self.best_loss:
                     self.best_loss = loss.item()
                 
-                # Log progress
+                # Update progress bar with current loss and learning rate
+                current_lr = self.group_learning_rates[0][-1] if self.group_learning_rates[0] else self.start_lr
+                pbar.set_postfix({"lr": f"{current_lr:.2e}", "loss": f"{loss.item():.4f}"})
+                
+                # Log progress less frequently to avoid console spam
                 if iteration % 10 == 0:
                     lr_str = ", ".join([f"Group {i}: {lrs[-1]:.2e}" for i, lrs in enumerate(self.group_learning_rates)])
                     logger.info(f"LR Finder: Iteration {iteration}, LRs: [{lr_str}], Loss: {loss.item():.4f}")
@@ -178,61 +205,19 @@ class LearningRateFinder:
     
     def plot_results(self, save_path: Optional[Path] = None) -> Dict[str, Any]:
         """
-        Plot the learning rate finder results for all parameter groups.
+        Analyze the learning rate finder results without plotting.
         
         Args:
-            save_path: Optional path to save the plots
+            save_path: Optional path parameter (kept for API compatibility)
             
         Returns:
             Dictionary containing suggested learning rates and analysis for each group
         """
         if not any(self.group_learning_rates) or not self.losses:
-            raise ValueError("No learning rate finder results to plot. Run find_lr first.")
-        
-        # Create figure with subplots for each parameter group
-        n_groups = len(self.group_learning_rates)
-        fig, axes = plt.subplots(n_groups + 1, 1, figsize=(12, 6 * (n_groups + 1)))
-        
-        # Plot loss curve
-        axes[0].plot(self.group_learning_rates[0], self.losses, 'b-', label='Loss')
-        axes[0].set_xscale('log')
-        axes[0].set_xlabel('Learning Rate (log scale)')
-        axes[0].set_ylabel('Loss')
-        axes[0].set_title('Overall Loss vs Learning Rate')
-        axes[0].grid(True)
+            raise ValueError("No learning rate finder results to analyze. Run find_lr first.")
         
         # Analyze results for each parameter group
         analysis = self._analyze_results()
-        colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
-        
-        # Mark suggested learning rates and steepest points
-        for group_idx, group_analysis in enumerate(analysis["groups"]):
-            suggested_lr = group_analysis["suggested_learning_rate"]
-            axes[0].axvline(suggested_lr, color=colors[group_idx % len(colors)], linestyle='--',
-                            label=f'Group {group_idx} Suggested LR: {suggested_lr:.2e}')
-            # Optionally, mark steepest point
-            if group_analysis.get("steepest_point_lr"):
-                axes[0].axvline(group_analysis["steepest_point_lr"], color=colors[group_idx % len(colors)], linestyle=':',
-                                label=f'Group {group_idx} Steepest: {group_analysis["steepest_point_lr"]:.2e}')
-        axes[0].legend()
-        
-        # Plot learning rate curves for each parameter group
-        for group_idx, lrs in enumerate(self.group_learning_rates):
-            ax = axes[group_idx + 1]
-            ax.plot(range(len(lrs)), lrs, color=colors[group_idx % len(colors)], label=f'Group {group_idx} LR')
-            ax.set_xlabel('Iteration')
-            ax.set_ylabel('Learning Rate')
-            ax.set_yscale('log')
-            ax.set_title(f'Parameter Group {group_idx} Learning Rate Progression')
-            ax.grid(True)
-            ax.legend()
-        
-        plt.tight_layout()
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.close(fig)
-        else:
-            plt.show()
         
         return analysis
     
@@ -286,8 +271,22 @@ class LearningRateFinder:
         
         # Suggest learning rates
         suggested_lr = steepest_lr if steepest_lr is not None else max_lr / 10
-        min_lr = suggested_lr / 10
-        max_lr = suggested_lr * 10
+        
+        # Apply model-specific scaling for suggested learning rates
+        if self.model_type == 'arcface':
+            # Scale down for ArcFace model
+            suggested_lr = min(suggested_lr, 1e-3)
+            min_lr = suggested_lr / 5
+            max_lr = suggested_lr * 5
+        elif self.model_type == 'siamese':
+            # Scale appropriately for Siamese networks
+            suggested_lr = min(suggested_lr, 5e-4)
+            min_lr = suggested_lr / 5
+            max_lr = suggested_lr * 5
+        else:
+            # Default scaling for other models
+            min_lr = suggested_lr / 10
+            max_lr = suggested_lr * 10
         
         return {
             "suggested_learning_rate": float(suggested_lr),
@@ -304,7 +303,7 @@ class LearningRateFinder:
     
     def save_results(self, output_dir: Path) -> Dict[str, Any]:
         """
-        Save learning rate finder results and plots.
+        Save learning rate finder results without plots.
         
         Args:
             output_dir: Directory to save results
@@ -330,8 +329,8 @@ class LearningRateFinder:
         with open(output_dir / "lr_finder_results.json", 'w') as f:
             json.dump(data, f, indent=2)
         
-        # Generate and save plots
-        analysis = self.plot_results(output_dir / "lr_finder_plot.png")
+        # Generate analysis without plots
+        analysis = self.plot_results()
         
         # Save analysis
         with open(output_dir / "lr_finder_analysis.json", 'w') as f:

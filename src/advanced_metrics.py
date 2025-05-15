@@ -6,14 +6,11 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union, Any
 from sklearn.metrics import precision_recall_fscore_support, confusion_matrix, roc_curve, auc
 from sklearn.metrics import precision_score, recall_score, f1_score
 from collections import defaultdict
-import seaborn as sns
-from matplotlib.colors import LinearSegmentedColormap
 
 from .base_config import logger
 
@@ -28,22 +25,22 @@ def plot_confusion_matrix(y_true: Union[np.ndarray, List],
                          cmap: str = 'Blues',
                          title: str = 'Confusion Matrix'):
     """
-    Comprehensive function to plot confusion matrix with optional per-class metrics.
+    Function to compute confusion matrix without plotting. Maintains API compatibility.
     
     Args:
         y_true: Array of true labels or confusion matrix if y_pred is None
         y_pred: Array of predicted labels (optional if cm is provided)
         classes: List of class names
-        output_dir: Directory to save the plot
-        model_name: Name of the model (for filename)
+        output_dir: Directory (not used, kept for API compatibility)
+        model_name: Name of the model (not used, kept for API compatibility)
         cm: Pre-computed confusion matrix (optional)
-        detailed: Whether to create additional per-class metrics plot
+        detailed: Whether to include detailed metrics (not used, kept for API compatibility)
         normalize: Whether to normalize the confusion matrix
-        cmap: Colormap for the heatmap
-        title: Title for the plot
+        cmap: Colormap (not used, kept for API compatibility)
+        title: Title (not used, kept for API compatibility)
     
     Returns:
-        Path to saved plot file
+        Confusion matrix as numpy array
     """
     # Verify we have enough information to proceed
     if cm is None and y_pred is None:
@@ -53,91 +50,12 @@ def plot_confusion_matrix(y_true: Union[np.ndarray, List],
     if cm is None:
         cm = confusion_matrix(y_true, y_pred)
     
-    # Normalize if requested
-    if normalize:
-        cm_plot = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-        fmt = '.2f'
-    else:
-        cm_plot = cm
-        fmt = 'd'
+    # Log that we're skipping visualization
+    logger.info("Skipping confusion matrix visualization as plotting features are disabled")
     
-    # Create figure for confusion matrix
-    plt.figure(figsize=(10, 8))
-    
-    # Plot confusion matrix as heatmap
-    sns.heatmap(cm_plot, annot=True, fmt=fmt, cmap=plt.cm.get_cmap(cmap),
-               xticklabels=classes, yticklabels=classes)
-    
-    # Add title and labels
-    plt.title(title)
-    plt.ylabel('True label')
-    plt.xlabel('Predicted label')
-    
-    # Add text annotations with improved contrast
-    thresh = cm_plot.max() / 2.
-    for i in range(cm_plot.shape[0]):
-        for j in range(cm_plot.shape[1]):
-            plt.text(j + 0.5, i + 0.5, format(cm_plot[i, j], fmt),
-                    ha="center", va="center",
-                    color="white" if cm_plot[i, j] > thresh else "black")
-    
-    plt.tight_layout()
-    
-    # Create the output directory structure
-    if output_dir is not None:
-        save_dir = Path(output_dir)
-        if model_name:
-            # Standard directory structure: output_dir/plots/model_name/
-            plots_dir = save_dir / "plots"
-            if not plots_dir.exists():
-                plots_dir.mkdir(parents=True, exist_ok=True)
-            
-            save_dir = plots_dir / model_name
-            if not save_dir.exists():
-                save_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Save confusion matrix plot
-        cm_path = save_dir / 'confusion_matrix.png'
-        plt.savefig(cm_path)
-        logger.info(f"Saved confusion matrix to {cm_path}")
-        plt.close()
-        
-        # If requested, generate additional per-class metrics
-        if detailed and y_pred is not None and classes is not None:
-            # Compute metrics per class
-            precision = precision_score(y_true, y_pred, average=None, zero_division=0)
-            recall = recall_score(y_true, y_pred, average=None, zero_division=0)
-            f1 = f1_score(y_true, y_pred, average=None, zero_division=0)
-            
-            # Create metrics dataframe
-            metrics_df = pd.DataFrame({
-                'Precision': precision,
-                'Recall': recall,
-                'F1-Score': f1
-            }, index=classes)
-            
-            # Plot per-class metrics
-            plt.figure(figsize=(12, 6))
-            metrics_df.plot(kind='bar')
-            plt.title('Per-Class Performance Metrics')
-            plt.xlabel('Class')
-            plt.ylabel('Score')
-            plt.xticks(rotation=45, ha='right')
-            plt.tight_layout()
-            
-            # Save per-class metrics plot
-            metrics_path = save_dir / 'per_class_metrics.png'
-            plt.savefig(metrics_path)
-            logger.info(f"Saved per-class metrics to {metrics_path}")
-            plt.close()
-            
-            return cm_path, metrics_path
-        
-        return cm_path
-    else:
-        # Just display the plot if no output directory is provided
-        plt.show()
-        return None
+    # Return the confusion matrix
+    return cm
+
 
 def calculate_per_class_metrics(y_true: np.ndarray, y_pred: np.ndarray, 
                                y_score: np.ndarray, class_names: List[str]) -> Dict[str, Dict[str, float]]:

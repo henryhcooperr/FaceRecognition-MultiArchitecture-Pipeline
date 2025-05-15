@@ -1,0 +1,15 @@
+[server]
+# Disable the watchdog to prevent PyTorch class path issues
+fileWatcherType = "none"
+
+[runner]
+# Increase timeouts for better stability
+fastReruns = true
+
+[theme]
+# Enhanced UI theme for better usability
+primaryColor = "#FF4B4B"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F2F6"
+textColor = "#262730"
+font = "sans serif"

@@ -11,10 +11,10 @@ import torch.nn.functional as F
 from pathlib import Path
 from typing import Dict, Optional, List, Tuple, Union, Any
 import numpy as np
-import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report
 import time
 import threading
+import math  # For cosine scheduler calculations
 import pandas as pd  # Also import pandas since we use it for saving metrics
 
 # Add a type alias for the scheduler types
@@ -29,113 +29,35 @@ from .advanced_metrics import plot_confusion_matrix
 
 def plot_learning_curves(train_losses: List[float], val_losses: List[float], 
                        accuracies: List[float], output_dir: str, model_name: str):
-    """Plot learning curves during training with enhanced visualizations."""
-    # Create a 2x2 subplot grid for more detailed plots
-    fig, axs = plt.subplots(2, 2, figsize=(16, 12))
+    """
+    Record learning curves metrics without plotting. Maintains API compatibility.
     
-    # Plot combined losses
-    ax1 = axs[0, 0]
-    epochs = list(range(1, len(train_losses) + 1))
-    ax1.plot(epochs, train_losses, 'b-', marker='o', markersize=4, label='Train Loss')
-    ax1.plot(epochs, val_losses, 'r-', marker='x', markersize=4, label='Validation Loss')
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('Loss')
-    ax1.set_title('Training and Validation Loss')
-    ax1.legend(loc='upper right')
-    ax1.grid(True, linestyle='--', alpha=0.7)
-    
-    # Plot accuracy
-    ax2 = axs[0, 1]
-    ax2.plot(epochs, accuracies, 'g-', marker='s', markersize=4, label='Validation Accuracy')
-    ax2.set_xlabel('Epoch')
-    ax2.set_ylabel('Accuracy')
-    ax2.set_title('Validation Accuracy')
-    ax2.set_ylim([0, 1.05])  # Set y-axis from 0 to slightly above 1
-    ax2.grid(True, linestyle='--', alpha=0.7)
-    
-    # Add accuracy percentage annotations on the right side
-    for i, acc in enumerate(accuracies):
-        if i % 2 == 0 or i == len(accuracies) - 1:  # Annotate every other point to avoid clutter
-            ax2.annotate(f'{acc*100:.1f}%', 
-                         xy=(epochs[i], acc), 
-                         xytext=(5, 0),
-                         textcoords='offset points',
-                         fontsize=8,
-                         color='darkgreen')
-    
-    # Plot side-by-side loss comparison
-    ax3 = axs[1, 0]
-    bar_width = 0.35
-    indices = np.arange(len(epochs))
-    ax3.bar(indices - bar_width/2, train_losses, bar_width, label='Train Loss', alpha=0.7, color='blue')
-    ax3.bar(indices + bar_width/2, val_losses, bar_width, label='Val Loss', alpha=0.7, color='red')
-    ax3.set_xlabel('Epoch')
-    ax3.set_ylabel('Loss')
-    ax3.set_title('Train vs Validation Loss Comparison')
-    ax3.set_xticks(indices)
-    ax3.set_xticklabels(epochs)
-    ax3.legend()
-    
-    # Plot loss vs accuracy scatter
-    ax4 = axs[1, 1]
-    scatter = ax4.scatter(val_losses, accuracies, c=epochs, cmap='viridis', 
-                          s=80, edgecolors='black', alpha=0.8)
-    ax4.set_xlabel('Validation Loss')
-    ax4.set_ylabel('Accuracy')
-    ax4.set_title('Validation Loss vs Accuracy')
-    ax4.grid(True, linestyle='--', alpha=0.7)
-    
-    # Add colorbar to show epoch progression
-    cbar = plt.colorbar(scatter, ax=ax4)
-    cbar.set_label('Epoch')
-    
-    # Add arrows to show progression over time
-    for i in range(len(val_losses) - 1):
-        ax4.annotate('', 
-                    xy=(val_losses[i+1], accuracies[i+1]), 
-                    xytext=(val_losses[i], accuracies[i]),
-                    arrowprops=dict(arrowstyle='->', color='gray', lw=0.5, alpha=0.5))
-    
-    # Add overall title
-    plt.suptitle(f'Learning Curves for {model_name}', fontsize=16)
-    plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust to accommodate the main title
-    
-    # Create the output directory structure if it doesn't exist
+    Args:
+        train_losses: List of training losses
+        val_losses: List of validation losses
+        accuracies: List of validation accuracies
+        output_dir: Directory to save metrics (not used for visualization)
+        model_name: Name of the model
+    """
+    # Create the output directory structure for metrics
     save_dir = Path(output_dir)
     if model_name:
-        save_dir = save_dir / "plots" / model_name
+        save_dir = save_dir / "metrics" / model_name
     save_dir.mkdir(parents=True, exist_ok=True)
     
-    # Save the figure to the created directory
-    plt.savefig(save_dir / 'learning_curves.png', dpi=300, bbox_inches='tight')
+    # Save metrics to a CSV file for future reference
+    epochs = list(range(1, len(train_losses) + 1))
+    metrics_df = pd.DataFrame({
+        'epoch': epochs,
+        'train_loss': train_losses,
+        'val_loss': val_losses,
+        'accuracy': accuracies
+    })
+    metrics_df.to_csv(save_dir / 'learning_curves_data.csv', index=False)
     
-    # Save a separate high-quality version for presentations
-    plt.savefig(save_dir / 'learning_curves_hq.pdf', format='pdf', bbox_inches='tight')
-    plt.close()
-    
-    # Save individual plots as well for easier viewing
-    # Losses
-    plt.figure(figsize=(10, 6))
-    plt.plot(epochs, train_losses, 'b-', marker='o', label='Train Loss')
-    plt.plot(epochs, val_losses, 'r-', marker='x', label='Validation Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title(f'{model_name}: Training and Validation Loss')
-    plt.legend()
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.savefig(save_dir / 'losses.png', dpi=200)
-    plt.close()
-    
-    # Accuracy
-    plt.figure(figsize=(10, 6))
-    plt.plot(epochs, accuracies, 'g-', marker='s', label='Validation Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.title(f'{model_name}: Validation Accuracy')
-    plt.ylim([0, 1.05])
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.savefig(save_dir / 'accuracy.png', dpi=200)
-    plt.close()
+    # Log summary statistics
+    logger.info(f"Learning curves data saved to {save_dir / 'learning_curves_data.csv'}")
+    logger.info(f"Final metrics - Train Loss: {train_losses[-1]:.4f}, Val Loss: {val_losses[-1]:.4f}, Accuracy: {accuracies[-1]:.4f}")
 
 def find_optimal_lr(model_type: str, dataset_path: Path, batch_size: int = 32,
                   start_lr: float = 1e-7, end_lr: float = 1.0, num_iterations: int = 100,
@@ -194,16 +116,18 @@ def find_optimal_lr(model_type: str, dataset_path: Path, batch_size: int = 32,
         output_dir = CHECKPOINTS_DIR / "lr_finder" / model_type
         output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Initialize LR Finder
+    # Initialize LR Finder with model-specific adjustments
     lr_finder = LearningRateFinder(
         model=model,
         criterion=criterion,
         optimizer=optimizer,
         device=device,
         start_lr=start_lr,
-        end_lr=end_lr,
+        # Use model-specific end_lr
+        end_lr=0.01 if model_type == 'arcface' else (0.1 if model_type == 'siamese' else end_lr),
         num_iterations=num_iterations,
-        save_dir=output_dir  # Use the selected output directory
+        save_dir=output_dir,  # Use the selected output directory
+        model_type=model_type  # Pass model type for specialized scaling
     )
 
     # Run LR finder
@@ -223,6 +147,30 @@ def find_optimal_lr(model_type: str, dataset_path: Path, batch_size: int = 32,
 
     return analysis
 
+def get_warmup_scheduler(optimizer, warmup_epochs: int, total_epochs: int, steps_per_epoch: int):
+    """Creates learning rate scheduler with warm-up phase followed by cosine annealing.
+    
+    Args:
+        optimizer: The optimizer to schedule
+        warmup_epochs: Number of epochs for the warm-up phase
+        total_epochs: Total number of training epochs
+        steps_per_epoch: Number of steps per epoch
+        
+    Returns:
+        A learning rate scheduler with warm-up
+    """
+    def lr_lambda(current_step):
+        warmup_steps = warmup_epochs * steps_per_epoch
+        if current_step < warmup_steps:
+            # Linear warm-up
+            return float(current_step) / float(max(1, warmup_steps))
+        else:
+            # Cosine annealing after warm-up
+            progress = float(current_step - warmup_steps) / float(max(1, total_epochs * steps_per_epoch - warmup_steps))
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+            
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
 def train_model(model_type: str, model_name: Optional[str] = None,
                 batch_size: int = 32, epochs: int = 50,
                 lr: float = 0.001, weight_decay: float = 1e-4,
@@ -230,7 +178,9 @@ def train_model(model_type: str, model_name: Optional[str] = None,
                 scheduler_factor: float = 0.5, clip_grad_norm: Optional[float] = None,
                 early_stopping: bool = False, early_stopping_patience: int = 10,
                 dataset_path: Optional[Union[Path, List[Path]]] = None,
-                use_lr_finder: bool = False):
+                use_lr_finder: bool = False, use_warmup: bool = False,
+                warmup_epochs: int = 5, easy_margin: bool = False,
+                two_phase_training: bool = False):
     """Train a face recognition model with advanced parameters.
     
     Args:
@@ -325,6 +275,7 @@ def train_model(model_type: str, model_name: Optional[str] = None,
     # Use Learning Rate Finder if requested - use first dataset for this
     if use_lr_finder:
         logger.info("Using LR Finder to determine optimal learning rate...")
+        logger.info(f"Using model-specific learning rate ranges for {model_type}")
         # Pass model_name to save results ONLY in the model directory
         lr_analysis = find_optimal_lr(
             model_type=model_type,
@@ -359,15 +310,67 @@ def train_model(model_type: str, model_name: Optional[str] = None,
         first_dataset = datasets.ImageFolder(selected_data_dirs[0] / "train", transform=transform)
         num_classes = len(first_dataset.classes)
     
-    model = get_model(model_type, num_classes=num_classes)
+    # Create model with special handling for ArcFace
+    if model_type == 'arcface':
+        # Initialize ArcFace with advanced parameters
+        from .face_models import ArcFaceNet  # Import for direct initialization
+        model = ArcFaceNet(
+            num_classes=num_classes,
+            dropout_rate=0.2,  # Lower dropout for better convergence
+            s=32.0,  # Increased scale from 16.0 to 32.0
+            m=0.5,  # Standard margin
+            easy_margin=easy_margin  # Support for easy margin option
+        )
+        logger.info(f"Created ArcFace model with enhanced parameters: easy_margin={easy_margin}")
+    else:
+        model = get_model(model_type, num_classes=num_classes)
+    
     model = model.to(device)
     
     # Setup training
-    criterion = get_criterion(model_type)
-    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # Setup criterion and optimizer with special handling for ArcFace
+    if model_type == 'arcface':
+        criterion = nn.CrossEntropyLoss(label_smoothing=0.05)  # Use label smoothing for ArcFace
+        # Use AMSGrad variant for better convergence with ArcFace
+        optimizer = optim.AdamW(
+            model.parameters(), 
+            lr=lr, 
+            weight_decay=weight_decay,
+            amsgrad=True  # Use AMSGrad for better convergence
+        )
+        logger.info(f"Using AdamW with AMSGrad for ArcFace training")
+    else:
+        criterion = get_criterion(model_type)
+        optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     
     # Setup learning rate scheduler
     scheduler: SchedulerType = None  # Type annotation with default value
+    
+    # Apply special warmup scheduler for ArcFace if needed
+    if model_type == 'arcface' and use_warmup:
+        # Setup learning rate warm-up
+        steps_per_epoch = len(train_loader) if 'train_loader' in locals() else 100
+        scheduler = get_warmup_scheduler(
+            optimizer=optimizer,
+            warmup_epochs=warmup_epochs,
+            total_epochs=epochs,
+            steps_per_epoch=steps_per_epoch
+        )
+        logger.info(f"Using warm-up scheduler for ArcFace with {warmup_epochs} epochs of warm-up")
+        
+        # Also configure model-specific settings if available
+        if hasattr(model, 'set_max_grad_norm') and clip_grad_norm is not None:
+            model.set_max_grad_norm(clip_grad_norm)
+            logger.info(f"Set ArcFace model max_grad_norm to {clip_grad_norm}")
+            
+        # Initialize two-phase training if requested
+        if two_phase_training and hasattr(model, 'freeze_backbone'):
+            model.freeze_backbone()
+            logger.info("Initialized two-phase training: backbone frozen for initial training phase")
+            
+        # Skip the regular scheduler setup since we're using custom warmup
+        if scheduler_type != 'warmup':
+            logger.info(f"Note: Ignoring {scheduler_type} scheduler since warm-up scheduler is being used")
 
     # For LR finder, we use the output values to set appropriate scheduler parameters
     if use_lr_finder and 'min_lr' in locals() and 'max_lr' in locals():
@@ -504,7 +507,20 @@ def train_model(model_type: str, model_name: Optional[str] = None,
                     
                     # Apply gradient clipping if enabled
                     if clip_grad_norm is not None:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
+                        # Enhanced gradient clipping for ArcFace
+                        if model_type == 'arcface':
+                            # Use model's max_grad_norm if available, or the provided clip_grad_norm
+                            max_norm = model.max_grad_norm if hasattr(model, 'max_grad_norm') else clip_grad_norm
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+                            
+                            # Log gradient norms occasionally
+                            if batch_idx % 50 == 0 and hasattr(model, 'get_arcface_stats'):
+                                stats = model.get_arcface_stats()
+                                if stats.get('grad_norm', 0) > 0.5 * max_norm:
+                                    logger.info(f"High gradient norm: {stats.get('grad_norm', 0):.3f} (threshold: {max_norm})")
+                        else:
+                            # Standard gradient clipping for other models
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
                     
                     # Set timer for optimizer step
                     start_optim = time.time()
@@ -630,6 +646,36 @@ def train_model(model_type: str, model_name: Optional[str] = None,
             logger.info(f'{dataset_prefix}Train Loss: {epoch_loss:.4f}, Val Loss: {val_epoch_loss:.4f}, Accuracy: {accuracy*100:.2f}%')
             logger.info(f'{dataset_prefix}Epoch time: {epoch_time:.2f}s')
             
+            # Check if we need to transition to phase 2 for ArcFace with two-phase training
+            # This transition happens after approximately 1/3 of total epochs
+            if model_type == 'arcface' and two_phase_training and hasattr(model, 'phase') and hasattr(model, 'unfreeze_backbone'):
+                phase1_epochs = max(10, epochs // 3)
+                if epoch == phase1_epochs and model.phase == 1:
+                    logger.info(f"Transitioning ArcFace model to phase 2 (full fine-tuning) after {phase1_epochs} epochs")
+                    model.unfreeze_backbone()
+                    
+                    # Optionally reduce learning rate for fine-tuning phase
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = param_group['lr'] * 0.5
+                    logger.info(f"Reduced learning rate to {optimizer.param_groups[0]['lr']:.2e} for phase 2")
+                    
+                    # Log model stats after transition
+                    if hasattr(model, 'get_arcface_stats'):
+                        stats = model.get_arcface_stats()
+                        logger.info(f"ArcFace phase 2 stats - phase: {stats['phase']}, margin: {stats['effective_margin']:.4f}")
+                        logger.info(f"Backbone frozen: {stats['backbone_frozen']}")
+            
+            # Update ArcFace epoch tracking for progressive margin
+            if model_type == 'arcface' and hasattr(model, 'update_epoch'):
+                model.update_epoch(epoch)
+                
+                # Log ArcFace stats every 5 epochs
+                if epoch % 5 == 0 and hasattr(model, 'get_arcface_stats'):
+                    stats = model.get_arcface_stats()
+                    logger.info(f"ArcFace epoch {epoch} stats - margin: {stats.get('effective_margin', 0):.3f}, "
+                               f"scale: {stats.get('effective_scale', 0):.1f}, "
+                               f"grad_norm: {stats.get('grad_norm', 0):.3f}")
+            
             # Save best model
             if accuracy > best_val_acc:
                 best_val_acc = accuracy
@@ -653,25 +699,15 @@ def train_model(model_type: str, model_name: Optional[str] = None,
                         print(f"{dataset_prefix}Early stopping triggered after {epoch+1} epochs")
                         break
             
-            # Plot learning curves every 5 epochs, but only if we have enough data
+            # Save metrics every 5 epochs, but only if we have enough data
             if (epoch + 1) % 5 == 0 and len(train_losses) >= 3:
                 try:
-                    # Use a separate thread for plotting to avoid freezing the main thread
-                    plot_thread = threading.Thread(
-                        target=plot_learning_curves,
-                        args=(train_losses, val_losses, accuracies, str(model_checkpoint_dir), model_name)
-                    )
-                    plot_thread.daemon = True  # Daemon thread will terminate when main thread exits
-                    plot_thread.start()
-                    logger.info(f"Started background plotting for epoch {epoch+1}")
+                    # Save metrics data
+                    plot_learning_curves(train_losses, val_losses, accuracies, 
+                                        str(model_checkpoint_dir), model_name)
+                    logger.info(f"Saved learning curve metrics for epoch {epoch+1}")
                 except Exception as e:
-                    logger.error(f"Error starting plot thread: {e}")
-                    # Fall back to synchronous plotting if threading fails
-                    try:
-                        plot_learning_curves(train_losses, val_losses, accuracies, 
-                                           str(model_checkpoint_dir), model_name)
-                    except Exception as e2:
-                        logger.error(f"Error plotting learning curves: {e2}")
+                    logger.error(f"Error saving metrics: {e}")
         
         # Save checkpoint after finishing each dataset
         checkpoint_path = model_checkpoint_dir / f'checkpoint_dataset_{dataset_idx+1}.pth'
@@ -684,28 +720,13 @@ def train_model(model_type: str, model_name: Optional[str] = None,
         }, checkpoint_path)
         logger.info(f"Saved checkpoint after training on {selected_data_dir.name}")
     
-    # Plot final learning curves in a background thread to prevent freezing
-    logger.info("Generating final learning curves in background thread...")
+    # Save final metrics data
+    logger.info("Saving final learning curves metrics...")
     try:
-        plot_thread = threading.Thread(
-            target=plot_learning_curves,
-            args=(train_losses, val_losses, accuracies, str(model_checkpoint_dir), model_name)
-        )
-        plot_thread.daemon = True
-        plot_thread.start()
-        
-        # Wait for a moment to let the thread start
-        time.sleep(0.5)
-        
+        plot_learning_curves(train_losses, val_losses, accuracies, 
+                          str(model_checkpoint_dir), model_name)
     except Exception as e:
-        logger.error(f"Error starting final plot thread: {e}")
-        # Fall back to synchronous plotting if threading fails
-        try:
-            logger.info("Falling back to synchronous plotting...")
-            plot_learning_curves(train_losses, val_losses, accuracies, 
-                               str(model_checkpoint_dir), model_name)
-        except Exception as e2:
-            logger.error(f"Error plotting final learning curves: {e2}")
+        logger.error(f"Error saving final metrics: {e}")
     
     # Save final model
     torch.save(model.state_dict(), model_checkpoint_dir / 'final_model.pth')

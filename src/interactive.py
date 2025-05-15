@@ -3,14 +3,19 @@
 import sys
 import json
 import subprocess
+import random  # for selecting random samples
 from pathlib import Path
 
-import torch
+import torch  # machine learning library
 
+# Import config stuff
 from .base_config import (
     logger, CHECKPOINTS_DIR, PROC_DATA_DIR, RAW_DATA_DIR,
     get_user_confirmation
 )
+
+# Added import for use below
+import os
 from .data_prep import get_preprocessing_config, process_raw_data, PreprocessingConfig, visualize_preprocessing_steps
 from .training import train_model
 from .testing import evaluate_model, predict_image
@@ -23,7 +28,7 @@ from . import download_dataset
 downloader_script = Path(__file__).parent / "download_dataset.py"
 
 def check_and_download_datasets():
-    """Check if datasets exist and download them if not."""
+    """See if we already have datasets or need to download them"""
     # Check if any valid dataset directories exist
     dataset_dirs = [d for d in RAW_DATA_DIR.iterdir() if d.is_dir() and d.name in ["dataset2", "dataset1"]]
     
@@ -71,7 +76,7 @@ def check_and_download_datasets():
         return False
 
 def interactive_menu():
-    """Interactive interface for the face recognition system."""
+    """The main menu for my face recognition system where users can do stuff."""
     # Add a command line parser for test mode
     if len(sys.argv) > 1 and sys.argv[1] == '--test':
         print("Running model tests...")
@@ -338,19 +343,43 @@ def interactive_menu():
             
             # Learning rate scheduler options
             print("\nLearning Rate Scheduler:")
-            print("1. ReduceLROnPlateau (reduces LR when metrics plateau)")
-            print("2. CosineAnnealing (gradually reduces LR following a cosine curve)")
-            print("3. StepLR (reduces LR by a factor every n epochs)")
-            print("4. None (constant learning rate)")
+            print("1. ReduceLROnPlateau (lowers learning rate when not improving)")
+            print("2. CosineAnnealing (smoothly decreases learning rate)")
+            print("3. StepLR (drops learning rate at fixed points)")
+            print("4. None (keep same learning rate)")
+            print("5. Warm-up (slowly increase then decrease)")
             
-            scheduler_choice = input("Select scheduler (1-4, default 1): ") or "1"
-            scheduler_type = ['reduce_lr', 'cosine', 'step', 'none'][int(scheduler_choice) - 1]
+            scheduler_choice = input("Select scheduler (1-5, default 1): ") or "1"
+            scheduler_type = ''
+            # Convert choice to actual scheduler type
+            if scheduler_choice == '1':
+                scheduler_type = 'reduce_lr'
+            elif scheduler_choice == '2':
+                scheduler_type = 'cosine'
+            elif scheduler_choice == '3':
+                scheduler_type = 'step'
+            elif scheduler_choice == '4':
+                scheduler_type = 'none'
+            elif scheduler_choice == '5':
+                scheduler_type = 'warmup'
+            else:
+                # Default if they enter something weird
+                scheduler_type = 'reduce_lr'
             
+            # Parameters for traditional schedulers
             scheduler_patience = 5
             scheduler_factor = 0.5
             if scheduler_type in ['reduce_lr', 'step']:
                 scheduler_patience = int(input(f"Enter patience for scheduler (default 5): ") or "5")
                 scheduler_factor = float(input(f"Enter factor for scheduler (default 0.5): ") or "0.5")
+            
+            # Parameters for warm-up scheduler
+            warmup_epochs = 0
+            if scheduler_type == 'warmup' or (model_type == 'arcface' and get_user_confirmation("Use learning rate warm-up for ArcFace? (recommended) (y/n): ")):
+                warmup_epochs = int(input("Enter number of warm-up epochs (default 5): ") or "5")
+                use_warmup = True
+            else:
+                use_warmup = False
             
             # Gradient clipping
             use_grad_clip = get_user_confirmation("Use gradient clipping? (y/n): ")
@@ -363,27 +392,63 @@ def interactive_menu():
             early_stopping_patience = 10
             if early_stopping:
                 early_stopping_patience = int(input("Enter patience for early stopping (default 10): ") or "10")
+                
+            # ArcFace-specific parameters
+            arcface_margin = 0.5
+            arcface_scale = 32.0
+            easy_margin = False
+            use_progressive_margin = True
+            two_phase_training = False
+            
+            if model_type == 'arcface':
+                print("\nArcFace-Specific Parameters:")
+                arcface_margin = float(input("Enter ArcFace margin (default 0.5): ") or "0.5")
+                arcface_scale = float(input("Enter ArcFace scale (default 32.0): ") or "32.0")
+                easy_margin = get_user_confirmation("Use easy margin for better initial convergence? (y/n): ")
+                use_progressive_margin = get_user_confirmation("Use progressive margin strategy (recommended)? (y/n): ")
+                two_phase_training = get_user_confirmation("Use two-phase training (freeze backbone first, then fine-tune)? (y/n): ")
             
             if get_user_confirmation("Start training? (y/n): "):
                 # Import the function directly to avoid any shadowing issues
                 from src.training import train_model as training_function
 
-                trained_model_name = training_function(
-                    model_type=model_type,
-                    model_name=model_name,
-                    batch_size=batch_size,
-                    epochs=epochs,
-                    lr=lr,
-                    weight_decay=weight_decay,
-                    scheduler_type=scheduler_type,
-                    scheduler_patience=scheduler_patience,
-                    scheduler_factor=scheduler_factor,
-                    clip_grad_norm=clip_grad_norm,
-                    early_stopping=early_stopping,
-                    early_stopping_patience=early_stopping_patience,
-                    dataset_path=selected_data_dirs,  # Pass the list of selected dataset paths
-                    use_lr_finder=use_lr_finder  # Add the LR Finder option
-                )
+                # Create a parameters dictionary for cleaner parameter passing
+                training_params = {
+                    'model_type': model_type,
+                    'model_name': model_name,
+                    'batch_size': batch_size,
+                    'epochs': epochs,
+                    'lr': lr,
+                    'weight_decay': weight_decay,
+                    'scheduler_type': scheduler_type,
+                    'scheduler_patience': scheduler_patience,
+                    'scheduler_factor': scheduler_factor,
+                    'clip_grad_norm': clip_grad_norm,
+                    'early_stopping': early_stopping,
+                    'early_stopping_patience': early_stopping_patience,
+                    'dataset_path': selected_data_dirs,  # Pass the list of selected dataset paths
+                    'use_lr_finder': use_lr_finder,  # Add the LR Finder option
+                    'use_warmup': use_warmup,
+                    'warmup_epochs': warmup_epochs
+                }
+                
+                # Add ArcFace-specific parameters if needed
+                if model_type == 'arcface':
+                    training_params.update({
+                        'arcface_margin': arcface_margin,
+                        'arcface_scale': arcface_scale,
+                        'easy_margin': easy_margin,
+                        'use_progressive_margin': use_progressive_margin,
+                        'two_phase_training': two_phase_training
+                    })
+                    
+                print("\nTraining with the following parameters:")
+                for param, value in training_params.items():
+                    if param != 'dataset_path':  # Skip the complex dataset path
+                        print(f"- {param}: {value}")
+                
+                # Train the model with all parameters
+                trained_model_name = training_function(**training_params)
                 print(f"\nModel trained and saved as: {trained_model_name}")
         
         elif choice == '4':
@@ -484,6 +549,10 @@ def interactive_menu():
             
             # Get hyperparameter tuning options
             n_trials = int(input("Enter number of trials (default 20): ") or "20")
+            # My own tweak for ArcFace - more trials since it's complex
+            if model_type == 'arcface' and n_trials <= 20:
+                n_trials = 50  # Increase trials but not too much, don't want to wait forever
+            
             timeout = input("Enter timeout in seconds (optional, press Enter for no timeout): ")
             timeout = int(timeout) if timeout else None
             
@@ -507,19 +576,49 @@ def interactive_menu():
             elif optimizer_choice == "3":
                 optimizer_type = "SGD_momentum"
             
+            # ArcFace-specific hyperparameter options
+            hyperopt_params = {}
+            if model_type == 'arcface':
+                print("\nArcFace-Specific Hyperparameter Options:")
+                
+                if get_user_confirmation("Include progressive margin in search space? (recommended) (y/n): "):
+                    hyperopt_params['include_progressive_margin'] = True
+                
+                if get_user_confirmation("Include easy margin in search space? (y/n): "):
+                    hyperopt_params['include_easy_margin'] = True
+                    
+                if get_user_confirmation("Include wider scale and margin ranges? (recommended) (y/n): "):
+                    hyperopt_params['wider_margin_scale_range'] = True
+                    
+                if get_user_confirmation("Include AMSGrad variant for optimizer? (recommended) (y/n): "):
+                    hyperopt_params['include_amsgrad'] = True
+                    
+                if get_user_confirmation("Include gradient clipping parameters? (recommended) (y/n): "):
+                    hyperopt_params['include_gradient_clipping'] = True
+            
             if get_user_confirmation("Start hyperparameter tuning? (y/n): "):
                 try:
+                    # Create a parameters dictionary for hyperparameter tuning
+                    tuning_params = {
+                        'model_type': model_type,
+                        'dataset_path': selected_data_dir,
+                        'n_trials': n_trials,
+                        'timeout': timeout,
+                        'use_trial0_baseline': use_trial0_baseline,
+                        'keep_checkpoints': keep_checkpoints,
+                        'use_lr_finder': use_lr_finder,
+                        'optimizer_type': optimizer_type
+                    }
+                    
+                    # Add ArcFace-specific parameters if needed
+                    if model_type == 'arcface' and hyperopt_params:
+                        tuning_params['arcface_params'] = hyperopt_params
+                        print("\nUsing ArcFace-specific hyperparameter options:")
+                        for param, value in hyperopt_params.items():
+                            print(f"- {param}: {value}")
+                    
                     # Call the run_hyperparameter_tuning function with all options
-                    results = run_hyperparameter_tuning(
-                        model_type=model_type,
-                        dataset_path=selected_data_dir,
-                        n_trials=n_trials,
-                        timeout=timeout,
-                        use_trial0_baseline=use_trial0_baseline,
-                        keep_checkpoints=keep_checkpoints,
-                        use_lr_finder=use_lr_finder,
-                        optimizer_type=optimizer_type
-                    )
+                    results = run_hyperparameter_tuning(**tuning_params)
                     
                     if results:
                         print("\nHyperparameter tuning complete!")
@@ -537,24 +636,54 @@ def interactive_menu():
                             # Set epochs to a reasonable value for full training
                             epochs = int(input(f"Enter number of epochs (default 50): ") or "50")
 
+                            # Create a parameters dictionary for training with optimal hyperparameters
+                            best_params = results['best_params']
+                            
+                            training_params = {
+                                'model_type': model_type,
+                                'model_name': model_name,
+                                'batch_size': best_params.get('batch_size', 32),
+                                'epochs': epochs,
+                                'lr': best_params.get('learning_rate', 0.001),
+                                'weight_decay': best_params.get('weight_decay', 0.0001),
+                                'scheduler_type': best_params.get('scheduler', 'cosine'),
+                                'scheduler_patience': best_params.get('scheduler_patience', 5),
+                                'scheduler_factor': best_params.get('scheduler_factor', 0.5),
+                                'clip_grad_norm': best_params.get('clip_grad_norm', None),
+                                'early_stopping': True,
+                                'early_stopping_patience': best_params.get('early_stopping_patience', 10),
+                                'dataset_path': selected_data_dir,
+                                'use_lr_finder': False,  # Don't use LR finder since we already have optimal parameters
+                                'optimizer_type': optimizer_type
+                            }
+                            
+                            # Add ArcFace-specific parameters if present in best_params
+                            if model_type == 'arcface':
+                                # Add warmup parameters if found
+                                if 'use_lr_warmup' in best_params:
+                                    training_params['use_warmup'] = best_params.get('use_lr_warmup', True)
+                                    training_params['warmup_epochs'] = best_params.get('warmup_epochs', 5)
+                                
+                                # Add specific ArcFace parameters if found
+                                if 'arcface_margin' in best_params:
+                                    training_params['arcface_margin'] = best_params.get('arcface_margin', 0.5)
+                                if 'arcface_scale' in best_params:
+                                    training_params['arcface_scale'] = best_params.get('arcface_scale', 32.0)
+                                if 'use_progressive_margin' in best_params:
+                                    training_params['use_progressive_margin'] = best_params.get('use_progressive_margin', True)
+                                if 'easy_margin' in best_params:
+                                    training_params['easy_margin'] = best_params.get('easy_margin', False)
+                                    
+                                # Set two phase training based on user's preference
+                                training_params['two_phase_training'] = get_user_confirmation("Use two-phase training for ArcFace? (recommended) (y/n): ")
+                            
+                            print("\nTraining with optimized parameters:")
+                            for param, value in training_params.items():
+                                if param != 'dataset_path':  # Skip the complex dataset path
+                                    print(f"- {param}: {value}")
+                            
                             # Train the model with the best parameters
-                            trained_model_name = training_function(
-                                model_type=model_type,
-                                model_name=model_name,
-                                batch_size=results['best_params']['batch_size'],
-                                epochs=epochs,
-                                lr=results['best_params']['learning_rate'],
-                                weight_decay=results['best_params']['weight_decay'],
-                                scheduler_type=results['best_params'].get('scheduler', 'cosine'),
-                                scheduler_patience=results['best_params'].get('scheduler_patience', 5),
-                                scheduler_factor=results['best_params'].get('scheduler_factor', 0.5),
-                                clip_grad_norm=results['best_params'].get('gradient_clip_val', None),  # Map gradient_clip_val to clip_grad_norm
-                                early_stopping=True,
-                                early_stopping_patience=results['best_params'].get('early_stopping_patience', 10),
-                                dataset_path=selected_data_dir,
-                                use_lr_finder=False,  # Don't use LR finder since we already have optimal parameters
-                                optimizer_type=optimizer_type
-                            )
+                            trained_model_name = training_function(**training_params)
                             print(f"\nModel trained and saved as: {trained_model_name}")
                 except Exception as e:
                     print(f"Error during hyperparameter tuning: {str(e)}")
@@ -797,10 +926,10 @@ def interactive_menu():
             download_datasets()
         
         elif choice == '9':
-            print("\nGoodbye!")
+            print("\nThanks for using my face recognition system! Goodbye!")
             break
         
         else:
-            print("Invalid choice. Please enter a number between 1 and 9.")
+            print(f"Oops! '{choice}' isn't valid. Please enter a number between 1 and 9.")
         
         input("\nPress Enter to continue...") 

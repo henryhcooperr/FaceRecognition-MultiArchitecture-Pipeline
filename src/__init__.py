@@ -19,8 +19,7 @@ from .training import (
     train_model, tune_hyperparameters, SiameseDataset
 )
 from .testing import (
-    evaluate_model, predict_image, plot_gradcam_visualization, 
-    generate_gradcam
+    evaluate_model, predict_image
 )
 
 # This helps with proper importing, easier to add modules this way
@@ -40,6 +39,5 @@ __all__ = [
     'train_model', 'tune_hyperparameters', 'SiameseDataset',
     
     # Evaluation
-    'evaluate_model', 'predict_image', 'plot_gradcam_visualization', 
-    'generate_gradcam'
+    'evaluate_model', 'predict_image'
 ] 
