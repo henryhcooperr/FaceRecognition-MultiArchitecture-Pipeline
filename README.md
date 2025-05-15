@@ -285,3 +285,12 @@ Combines multiple models for improved accuracy through model averaging.
 - PyTorch team for the deep learning framework
 - MTCNN developers for the face detection implementation
 - FaceNet-PyTorch for inspiration and utility functions
+
+## Author
+
+👤 **Henry Cooper**  
+🎓 Computer Science & Mathematics, University of San Diego  
+📧 [henrycooper@sandiego.edu](mailto:henrycooper@sandiego.edu)  
+🔗 [LinkedIn](https://www.linkedin.com/in/henryhcooper)
+
+Feel free to reach out with questions, feedback, or collaboration ideas!
