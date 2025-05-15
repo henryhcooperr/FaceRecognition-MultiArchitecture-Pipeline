@@ -56,12 +56,26 @@ The project uses two datasets:
    git checkout simplified
    ```
 
-2. Install the required packages:
+2. Create and activate a virtual environment (recommended):
+   
+   **On macOS/Linux:**
+   ```bash
+   python -m venv venv
+   source venv/bin/activate
+   ```
+   
+   **On Windows:**
+   ```bash
+   python -m venv venv
+   venv\Scripts\activate
+   ```
+
+3. Install the required packages:
    ```
    pip install -r requirements.txt
    ```
 
-3. (Optional) Download the datasets:
+4. (Optional) Download the datasets:
    ```
    python run.py
    ```
