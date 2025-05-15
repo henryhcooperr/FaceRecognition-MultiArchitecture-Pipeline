@@ -70,10 +70,13 @@ The project uses two datasets:
    venv\Scripts\activate
    ```
 
-3. Install the required packages:
+3. Upgrade pip and install the required packages:
+   ```bash
+   pip install --upgrade pip
+   pip install --prefer-binary -r requirements.txt
    ```
-   pip install -r requirements.txt
-   ```
+   
+   > **Note:** Using `--prefer-binary` helps avoid build errors with packages like Pillow, especially on newer versions of Python.
 
 4. (Optional) Download the datasets:
    ```
