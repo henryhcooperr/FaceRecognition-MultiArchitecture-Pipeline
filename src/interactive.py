@@ -559,8 +559,28 @@ def interactive_menu():
             use_trial0_baseline = get_user_confirmation("Use trial-0 baseline for first trial? (y/n): ")
             keep_checkpoints = int(input("Number of best checkpoints to keep per trial (default 1): ") or "1")
             
+            # Add option for epochs per trial
+            epochs_per_trial = int(input("Number of epochs to train per trial (default 10): ") or "10")
+            
+            # Add option for enabling/disabling early stopping
+            use_early_stopping = get_user_confirmation("Use early stopping during trials? (y/n): ")
+            
+            # Ask for early stopping patience if early stopping is enabled
+            early_stopping_patience = None
+            if use_early_stopping:
+                patience_input = input("Early stopping patience (epochs to wait before stopping, press Enter for auto): ")
+                if patience_input:
+                    early_stopping_patience = int(patience_input)
+            
             # Add option for Learning Rate Finder
             use_lr_finder = get_user_confirmation("Use Learning Rate Finder to determine optimal learning rates? (y/n): ")
+            
+            # Ask for LR finder iterations if enabled
+            lr_finder_iterations = 50  # Default
+            if use_lr_finder:
+                iterations_input = input("Number of LR finder iterations (more = better analysis, slower) (default 50): ")
+                if iterations_input:
+                    lr_finder_iterations = int(iterations_input)
             
             # Add option to specify optimizer
             print("\nSelect optimizer type:")
@@ -607,7 +627,11 @@ def interactive_menu():
                         'use_trial0_baseline': use_trial0_baseline,
                         'keep_checkpoints': keep_checkpoints,
                         'use_lr_finder': use_lr_finder,
-                        'optimizer_type': optimizer_type
+                        'lr_finder_iterations': lr_finder_iterations if use_lr_finder else 50,  # Only use if LR finder is enabled
+                        'optimizer_type': optimizer_type,
+                        'epochs_per_trial': epochs_per_trial,
+                        'use_early_stopping': use_early_stopping,
+                        'early_stopping_patience': early_stopping_patience
                     }
                     
                     # Add ArcFace-specific parameters if needed
@@ -616,6 +640,21 @@ def interactive_menu():
                         print("\nUsing ArcFace-specific hyperparameter options:")
                         for param, value in hyperopt_params.items():
                             print(f"- {param}: {value}")
+                    
+                    # Add automatic performance optimizations for faster tuning
+                    # Enable mixed precision and optimal thread management
+                    tuning_params['use_mixed_precision'] = True
+                    
+                    # Let the system auto-detect optimal number of CPU threads
+                    cpu_count = os.cpu_count() or 4
+                    tuning_params['max_cpu_threads'] = max(1, cpu_count - 1)
+                    
+                    print("\nAutomatic performance optimizations enabled:")
+                    print("- Mixed precision training (faster calculations)")
+                    print(f"- Optimized CPU thread usage ({tuning_params['max_cpu_threads']} threads)")
+                    if torch.cuda.is_available():
+                        print("- GPU optimizations (cuDNN benchmarking, TF32 precision)")
+                        print("- Larger batch sizes for better GPU utilization")
                     
                     # Call the run_hyperparameter_tuning function with all options
                     results = run_hyperparameter_tuning(**tuning_params)

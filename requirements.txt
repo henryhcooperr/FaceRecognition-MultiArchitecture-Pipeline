@@ -1,7 +1,7 @@
 torch>=1.13.0
 torchvision>=0.14.0
 numpy>=1.23.0
-pillow>=9.3.0
+pillow==11.2.1
 matplotlib>=3.6.0
 scikit-learn>=1.2.0
 pandas>=1.5.0
@@ -13,4 +13,5 @@ optuna>=3.0.0
 kagglehub>=0.1.5
 mtcnn==0.1.1
 seaborn>=0.12.0
-psutil>=5.9.0 
+psutil>=5.9.0
+streamlit>=1.22.0 

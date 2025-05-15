@@ -11,6 +11,7 @@ import json
 import torch
 import optuna
 import numpy as np
+from torch.cuda.amp import autocast, GradScaler  # For mixed precision training
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union, Tuple
 from torch.utils.data import DataLoader
@@ -189,7 +190,7 @@ def get_scheduler(optimizer: torch.optim.Optimizer, params: Dict[str, Any], epoc
     else:
         return None
 
-def find_optimal_lr_for_trial(model_type: str, dataset_path: Path, batch_size: int = 32) -> float:
+def find_optimal_lr_for_trial(model_type: str, dataset_path: Path, batch_size: int = 32, num_iterations: int = 50) -> float:
     """
     Find the optimal learning rate for a specific trial.
     
@@ -197,6 +198,7 @@ def find_optimal_lr_for_trial(model_type: str, dataset_path: Path, batch_size: i
         model_type: Type of model (baseline, cnn, siamese, etc.)
         dataset_path: Path to the processed dataset
         batch_size: Batch size for the dataloader
+        num_iterations: Number of iterations for learning rate finder (more is better but slower)
         
     Returns:
         Suggested learning rate
@@ -236,20 +238,27 @@ def find_optimal_lr_for_trial(model_type: str, dataset_path: Path, batch_size: i
     
     # Configure model-specific learning rate ranges
     start_lr = 1e-7  # Standard start LR
+    
+    # Adjust endLR based on model type but use provided num_iterations
     if model_type == 'arcface':
         # ArcFace needs much lower end LR
         end_lr = 0.01
         logger.info(f"Using lower end_lr={end_lr} for ArcFace model")
-        num_iterations = 70  # More iterations for better resolution at lower LRs
+        # If num_iterations wasn't explicitly specified, use a higher value for ArcFace
+        if num_iterations == 50:  # If it's still the default
+            num_iterations = 70  # More iterations for better resolution at lower LRs
     elif model_type == 'siamese':
         # Siamese networks also benefit from more controlled LR ranges
         end_lr = 0.1
         logger.info(f"Using restricted end_lr={end_lr} for Siamese model")
-        num_iterations = 60
+        # If num_iterations wasn't explicitly specified, use a higher value for Siamese
+        if num_iterations == 50:  # If it's still the default
+            num_iterations = 60
     else:
         # Standard settings for other models
         end_lr = 1.0
-        num_iterations = 50
+        
+    logger.info(f"Using {num_iterations} iterations for learning rate finder")
     
     # Initialize LR Finder with model-specific settings
     lr_finder = LearningRateFinder(
@@ -284,8 +293,14 @@ def run_hyperparameter_tuning(model_type: Optional[str] = None,
                              use_trial0_baseline: bool = True,
                              keep_checkpoints: int = 1,
                              use_lr_finder: bool = False,
+                             lr_finder_iterations: int = 50,  # Default LR finder iterations
                              optimizer_type: Optional[str] = None,
-                             arcface_params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+                             arcface_params: Optional[Dict[str, Any]] = None,
+                             epochs_per_trial: int = 10,
+                             use_early_stopping: bool = True,
+                             early_stopping_patience: Optional[int] = None,
+                             max_cpu_threads: Optional[int] = None,
+                             use_mixed_precision: bool = True) -> Optional[Dict[str, Any]]:
     """Run the hyperparameter tuning process with user-friendly progress bar.
     
     Args:
@@ -296,6 +311,7 @@ def run_hyperparameter_tuning(model_type: Optional[str] = None,
         use_trial0_baseline: Start with my hand-picked values? 
         keep_checkpoints: How many saved models to keep per trial
         use_lr_finder: Use my auto LR finder?
+        lr_finder_iterations: Number of iterations for learning rate finder (default: 50)
         optimizer_type: Which optimizer ('AdamW', 'RAdam', 'SGD_momentum')
         arcface_params: Extra params for ArcFace:
             - include_progressive_margin: Try different margin growth?
@@ -303,10 +319,27 @@ def run_hyperparameter_tuning(model_type: Optional[str] = None,
             - wider_margin_scale_range: Try more extreme values?
             - include_amsgrad: Test with/without AMSGrad?
             - include_gradient_clipping: Try different clipping thresholds?
+        epochs_per_trial: Number of epochs to train each trial (default: 10)
+        use_early_stopping: Whether to use early stopping during trial training (default: True)
+        early_stopping_patience: Number of epochs to wait before early stopping (default: auto-calculated)
+        max_cpu_threads: Maximum number of CPU threads to use (default: auto-detected)
+        use_mixed_precision: Whether to use mixed precision training for faster performance (default: True)
         
     Returns:
         Best parameters and results, or None if it fails
     """
+    # Optimize CPU and GPU usage
+    used_threads = limit_cpu_threads(max_cpu_threads)
+    logger.info(f"CPU threads limited to {used_threads} for better parallelism")
+    
+    # Enable GPU optimizations if available
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True  # Speed up fixed-size inputs
+        if use_mixed_precision:
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            logger.info("GPU optimizations enabled with mixed precision and TF32")
+    
     # Use interactive selection if model_type or dataset_path not provided
     if model_type is None:
         print("\nAvailable model types:")
@@ -423,6 +456,11 @@ def run_hyperparameter_tuning(model_type: Optional[str] = None,
     print(f"Trial-0 baseline: {'Enabled' if use_trial0_baseline else 'Disabled'}")
     print(f"LR Finder: {'Enabled' if use_lr_finder else 'Disabled'}")
     
+    # Create CSV file for logging all metrics
+    metrics_csv_path = hyperopt_output_dir / "hyperopt_metrics.csv"
+    with open(metrics_csv_path, 'w') as f:
+        f.write("trial,epoch,train_loss,train_acc,val_loss,val_acc,best_val_acc,lr,batch_size,weight_decay,scheduler\n")
+    
     # Initialize progress bar for trials
     pbar_trials = tqdm(total=n_trials, desc="Hyperparameter Trials")
     
@@ -439,7 +477,9 @@ def run_hyperparameter_tuning(model_type: Optional[str] = None,
     
     # Run optimization with progress tracking
     study.optimize(
-        lambda trial: objective(trial, model_type, dataset_path, use_trial0_baseline, use_lr_finder, optimizer_type, arcface_params),
+        lambda trial: objective(trial, model_type, dataset_path, use_trial0_baseline, use_lr_finder, 
+                               optimizer_type, arcface_params, epochs_per_trial, use_early_stopping,
+                               early_stopping_patience, lr_finder_iterations, metrics_csv_path),
         n_trials=n_trials,
         timeout=timeout,
         callbacks=[progress_callback]
@@ -544,7 +584,9 @@ def create_search_space():
 
 def objective(trial: optuna.Trial, model_type: str, dataset_path: Path, 
             use_trial0_baseline: bool, use_lr_finder: bool = False, optimizer_type: Optional[str] = None,
-            arcface_params: Optional[Dict[str, Any]] = None) -> float:
+            arcface_params: Optional[Dict[str, Any]] = None, epochs_per_trial: int = 10,
+            use_early_stopping: bool = True, early_stopping_patience: Optional[int] = None,
+            lr_finder_iterations: int = 50, metrics_csv_path: Optional[Path] = None) -> float:
     """This is the function Optuna calls for each trial.
     
     Args:
@@ -555,10 +597,17 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
         use_lr_finder: Try to auto-detect good learning rates?
         optimizer_type: Which optimizer to use
         arcface_params: Special options for ArcFace
+        epochs_per_trial: Number of epochs to train each trial
+        use_early_stopping: Whether to use early stopping
+        early_stopping_patience: Number of epochs to wait for improvement before stopping
+        lr_finder_iterations: Number of iterations for learning rate finder
+        metrics_csv_path: Path to save metrics to CSV file
         
     Returns:
         How good this trial was (validation accuracy)
     """
+    # Determine device at the beginning of the function
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # Use trial-0 baseline if specified and this is trial 0
     if use_trial0_baseline and trial.number == 0:
         if model_type in TRIAL0_BASELINES:
@@ -570,13 +619,21 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
     else:
         params = {}
     
-    # Sample hyperparameters
-    params['batch_size'] = trial.suggest_categorical('batch_size', [8, 16, 32, 64, 128])
+    # Sample hyperparameters with larger batch sizes for GPU
+    if device.type == 'cuda':
+        # Use larger batch sizes for GPU to take better advantage of parallelism
+        batch_sizes = [16, 32, 64, 128, 256]
+        logger.info("Using larger batch sizes for GPU acceleration")
+    else:
+        # Use smaller batch sizes for CPU to avoid memory issues
+        batch_sizes = [8, 16, 32, 64]
+        
+    params['batch_size'] = trial.suggest_categorical('batch_size', batch_sizes)
     
     # Use LR Finder to determine optimal learning rate if enabled
     if use_lr_finder:
         try:
-            optimal_lr = find_optimal_lr_for_trial(model_type, dataset_path, params['batch_size'])
+            optimal_lr = find_optimal_lr_for_trial(model_type, dataset_path, params['batch_size'], num_iterations=lr_finder_iterations)
             
             # Apply model-specific scaling factors
             if model_type == 'arcface':
@@ -716,8 +773,34 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
         train_dataset = datasets.ImageFolder(dataset_path / "train", transform=transform)
         val_dataset = datasets.ImageFolder(dataset_path / "val", transform=transform)
     
-    train_loader = DataLoader(train_dataset, batch_size=params['batch_size'], shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=params['batch_size'], shuffle=False, num_workers=4)
+    # Optimize DataLoader for better performance
+    # Increase num_workers based on CPU cores available, use prefetch factor for memory efficiency
+    cpu_count = os.cpu_count() or 4  # Get CPU count, fallback to 4 if None
+    optimal_workers = min(cpu_count, 8)  # Cap at 8 workers to avoid diminishing returns
+    
+    pin_memory = device.type == 'cuda'  # Use pin_memory when using GPU
+    
+    # Use larger batches for validation to speed up evaluation
+    val_batch_size = params['batch_size'] * 2
+    
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=params['batch_size'], 
+        shuffle=True, 
+        num_workers=optimal_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=2,
+        persistent_workers=True
+    )
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=val_batch_size, 
+        shuffle=False, 
+        num_workers=optimal_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=2,
+        persistent_workers=True
+    )
     
     # Initialize model
     num_classes = len(train_dataset.classes) if hasattr(train_dataset, 'classes') else 2
@@ -770,8 +853,14 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
             model.dropout = nn.Dropout(params['dropout'])
             logger.info(f"Set dropout rate to {params['dropout']}")
     
-    # Move model to GPU if available
+    # Move model to GPU if available and enable GPU optimizations
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device.type == 'cuda':
+        # Enable cuDNN benchmarking for faster convolutions
+        torch.backends.cudnn.benchmark = True
+        # Optionally enable TF32 precision on Ampere GPUs for additional speedup
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     model = model.to(device)
     
     # Setup optimizer and criterion
@@ -785,15 +874,33 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
         criterion = get_criterion(model_type)
     
     # Setup scheduler
-    scheduler = get_scheduler(optimizer, params, epochs=10)  # Use 10 epochs for quick evaluation
+    scheduler = get_scheduler(optimizer, params, epochs=epochs_per_trial)  # Use specified epochs
     
     # Training loop
     best_val_acc = 0.0
     early_stopping_counter = 0
-    early_stopping_patience = 5
+    # Set early stopping patience based on parameter or calculate dynamically
+    if early_stopping_patience is None:
+        # For shorter trials, use shorter patience to ensure it can trigger
+        es_patience = min(5, max(2, epochs_per_trial // 3))  # Adjust patience based on total epochs
+    else:
+        # Use the provided patience value
+        es_patience = early_stopping_patience
+        
+    # Log the early stopping settings
+    if use_early_stopping:
+        logger.info(f"Early stopping enabled with patience={es_patience} epochs")
+    else:
+        logger.info("Early stopping disabled for this trial")
+        
+    # Set up mixed precision training if using GPU
+    use_amp = device.type == 'cuda'
+    scaler = GradScaler() if use_amp else None
+    if use_amp:
+        logger.info("Using mixed precision training for faster performance")
     
-    pbar_epochs = tqdm(range(10), desc=f"Trial {trial.number}", leave=False)
-    for epoch in pbar_epochs:  # Use 10 epochs for quick evaluation with progress bar
+    pbar_epochs = tqdm(range(epochs_per_trial), desc=f"Trial {trial.number}", leave=False)
+    for epoch in pbar_epochs:  # Use specified number of epochs per trial
         # Training phase
         model.train()
         train_loss = 0.0
@@ -801,27 +908,53 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
         train_total = 0
         
         # Add progress bar for batches
-        pbar_train = tqdm(train_loader, desc=f"Train {epoch+1}/10", leave=False)
+        pbar_train = tqdm(train_loader, desc=f"Train {epoch+1}/{epochs_per_trial}", leave=False)
         for inputs, targets in pbar_train:
             inputs, targets = inputs.to(device), targets.to(device)
             
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
             
-            # Handle ArcFace models which need labels during training
-            if model_type == 'arcface' and model.training:
-                outputs = model(inputs, labels=targets)  # Pass labels to ArcFace model
+            # Use mixed precision for forward and backward passes if GPU available
+            if use_amp:
+                with autocast():
+                    # Handle ArcFace models which need labels during training
+                    if model_type == 'arcface' and model.training:
+                        outputs = model(inputs, labels=targets)  # Pass labels to ArcFace model
+                    else:
+                        outputs = model(inputs)
+                    
+                    loss = criterion(outputs, targets)
+                
+                # Use scaler for mixed precision backward pass
+                scaler.scale(loss).backward()
+                
+                # Apply gradient clipping for numerical stability
+                if model_type == 'arcface' and params.get('use_gradient_clipping', False):
+                    clip_value = params.get('clip_grad_norm', 0.5)
+                    # Unscale before clipping
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_value)
+                
+                # Update with scaler
+                scaler.step(optimizer)
+                scaler.update()
             else:
-                outputs = model(inputs)
+                # Standard full precision training
+                # Handle ArcFace models which need labels during training
+                if model_type == 'arcface' and model.training:
+                    outputs = model(inputs, labels=targets)  # Pass labels to ArcFace model
+                else:
+                    outputs = model(inputs)
+                    
+                loss = criterion(outputs, targets)
+                loss.backward()
                 
-            loss = criterion(outputs, targets)
-            loss.backward()
-            
-            # Apply gradient clipping for numerical stability, especially for ArcFace
-            if model_type == 'arcface' and params.get('use_gradient_clipping', False):
-                clip_value = params.get('clip_grad_norm', 0.5)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), clip_value)
-                
-            optimizer.step()
+                # Apply gradient clipping for numerical stability, especially for ArcFace
+                if model_type == 'arcface' and params.get('use_gradient_clipping', False):
+                    clip_value = params.get('clip_grad_norm', 0.5)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_value)
+                    
+                optimizer.step()
             
             train_loss += loss.item()
             _, predicted = outputs.max(1)
@@ -848,37 +981,48 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
         
         with torch.no_grad():
             # Add progress bar for validation batches
-            pbar_val = tqdm(val_loader, desc=f"Val {epoch+1}/10", leave=False)
+            pbar_val = tqdm(val_loader, desc=f"Val {epoch+1}/{epochs_per_trial}", leave=False)
             for inputs, targets in pbar_val:
                 inputs, targets = inputs.to(device), targets.to(device)
                 
-                # For validation, ArcFace needs special handling
-                if model_type == 'arcface':
-                    # During validation, ArcFace doesn't need labels
-                    emb = model(inputs)  # Get embeddings
-                    
-                    # For ArcFace validation we can use a simple linear layer
-                    # to get logits from the embeddings
-                    if not hasattr(model, 'val_classifier'):
-                        # Create a simple classifier for validation only
-                        model.val_classifier = nn.Linear(
-                            512,  # ArcFace embedding dimension
-                            len(train_dataset.classes)
-                        ).to(device)
-                        # Initialize with normalized weights for better cosine similarity
-                        nn.init.orthogonal_(model.val_classifier.weight)
-                    
-                    # Normalize embeddings for consistent evaluation
-                    emb = F.normalize(emb, p=2, dim=1)
-                    # Normalize classifier weights for cosine similarity
-                    model.val_classifier.weight.data = F.normalize(
-                        model.val_classifier.weight.data, p=2, dim=1)
-                    
-                    outputs = model.val_classifier(emb)
+                # Use mixed precision for validation too (faster but still accurate)
+                if use_amp:
+                    with autocast():
+                        # For validation, ArcFace needs special handling
+                        if model_type == 'arcface':
+                            # Use embeddings and cosine similarity for proper validation
+                            embeddings = model.get_embedding(inputs)
+                            normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+                            
+                            # Use the weights from the ArcFace module as class centers
+                            class_centers = F.normalize(model.arcface.weight, p=2, dim=1)
+                            
+                            # Compute cosine similarity scores with appropriate scaling
+                            scale_factor = model.arcface.s
+                            logits = torch.matmul(normalized_embeddings, class_centers.t()) * scale_factor
+                            outputs = logits
+                        else:
+                            outputs = model(inputs)
+                        
+                        loss = criterion(outputs, targets)
                 else:
-                    outputs = model(inputs)
-                    
-                loss = criterion(outputs, targets)
+                    # For validation, ArcFace needs special handling
+                    if model_type == 'arcface':
+                        # Use embeddings and cosine similarity for proper validation
+                        embeddings = model.get_embedding(inputs)
+                        normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+                        
+                        # Use the weights from the ArcFace module as class centers
+                        class_centers = F.normalize(model.arcface.weight, p=2, dim=1)
+                        
+                        # Compute cosine similarity scores with appropriate scaling
+                        scale_factor = model.arcface.s
+                        logits = torch.matmul(normalized_embeddings, class_centers.t()) * scale_factor
+                        outputs = logits
+                    else:
+                        outputs = model(inputs)
+                        
+                    loss = criterion(outputs, targets)
                 
                 val_loss += loss.item()
                 _, predicted = outputs.max(1)
@@ -889,19 +1033,43 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
         # Update the epoch progress bar with validation metrics
         pbar_epochs.set_postfix({"train_acc": f"{train_acc:.4f}", "val_acc": f"{val_acc:.4f}"})
         
+        # Print validation accuracy to console to keep user informed during long tuning processes
+        print(f"Trial {trial.number} Epoch {epoch+1}/{epochs_per_trial} - Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
+        
+        # Log metrics to CSV file for analysis if metrics_csv_path is provided
+        if metrics_csv_path is not None:
+            try:
+                with open(metrics_csv_path, 'a') as f:
+                    f.write(f"{trial.number},{epoch+1},{train_loss:.4f},{train_acc:.4f},{val_loss:.4f},{val_acc:.4f},")
+                    f.write(f"{best_val_acc:.4f},{params['learning_rate']:.6f},{params['batch_size']},{params['weight_decay']:.6f},{params.get('scheduler', 'none')}\n")
+            except Exception as e:
+                logger.warning(f"Error writing to metrics CSV: {e}")
+        
         # Update scheduler
         if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
             scheduler.step(val_loss)
         elif scheduler is not None:
             scheduler.step()
         
-        # Early stopping
+        # Early stopping - always track best val_acc, but only apply early stopping if enabled
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             early_stopping_counter = 0
-        else:
+        elif use_early_stopping:  # Only increment counter if early stopping is enabled
             early_stopping_counter += 1
-            if early_stopping_counter >= early_stopping_patience:
+            # Log the early stopping counter status
+            if early_stopping_counter > 0:
+                print(f"Early stopping counter: {early_stopping_counter}/{es_patience}")
+                
+            if early_stopping_counter >= es_patience:
+                print(f"Early stopping triggered for trial {trial.number} at epoch {epoch+1} (patience: {es_patience})")
+                # Add a note to the CSV file if metrics_csv_path is provided
+                if metrics_csv_path is not None:
+                    try:
+                        with open(metrics_csv_path, 'a') as f:
+                            f.write(f"{trial.number},{epoch+1},EARLY_STOPPING_TRIGGERED,{es_patience}\n")
+                    except Exception as e:
+                        logger.warning(f"Error writing early stopping note to CSV: {e}")
                 break
         
         # Report intermediate value to Optuna
@@ -913,5 +1081,41 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
     
     return best_val_acc
 
+# Limit number of threads for better multithreading coordination
+def limit_cpu_threads(max_threads: Optional[int] = None):
+    """Limit CPU threads to improve parallelism efficiency.
+    
+    Args:
+        max_threads: Maximum number of threads to use (None means auto-detect)
+    """
+    if max_threads is None:
+        # Auto-detect based on CPU count
+        cpu_count = os.cpu_count() or 4
+        # Save some cores for OS and other tasks
+        max_threads = max(1, cpu_count - 1)
+    
+    # Set PyTorch thread limits
+    torch.set_num_threads(max_threads)
+    
+    # Also set OpenMP thread limits if possible
+    try:
+        import os
+        os.environ["OMP_NUM_THREADS"] = str(max_threads)
+        os.environ["MKL_NUM_THREADS"] = str(max_threads)
+    except:
+        pass
+    
+    return max_threads
+
 if __name__ == "__main__":
-    run_hyperparameter_tuning() 
+    # Limit threads for better performance with DataLoader workers
+    limit_cpu_threads()
+    
+    # Enable GPU optimizations
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        print("CUDA available: GPU optimizations enabled")
+        
+    run_hyperparameter_tuning(use_mixed_precision=True) 

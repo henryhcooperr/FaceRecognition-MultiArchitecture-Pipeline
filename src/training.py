@@ -28,7 +28,8 @@ from .lr_finder import LearningRateFinder
 from .advanced_metrics import plot_confusion_matrix
 
 def plot_learning_curves(train_losses: List[float], val_losses: List[float], 
-                       accuracies: List[float], output_dir: str, model_name: str):
+                       accuracies: List[float], output_dir: str, model_name: str,
+                       train_accuracies: Optional[List[float]] = None):
     """
     Record learning curves metrics without plotting. Maintains API compatibility.
     
@@ -38,6 +39,7 @@ def plot_learning_curves(train_losses: List[float], val_losses: List[float],
         accuracies: List of validation accuracies
         output_dir: Directory to save metrics (not used for visualization)
         model_name: Name of the model
+        train_accuracies: Optional list of training accuracies
     """
     # Create the output directory structure for metrics
     save_dir = Path(output_dir)
@@ -47,17 +49,23 @@ def plot_learning_curves(train_losses: List[float], val_losses: List[float],
     
     # Save metrics to a CSV file for future reference
     epochs = list(range(1, len(train_losses) + 1))
-    metrics_df = pd.DataFrame({
+    metrics_dict = {
         'epoch': epochs,
         'train_loss': train_losses,
         'val_loss': val_losses,
-        'accuracy': accuracies
-    })
+        'val_accuracy': accuracies
+    }
+    
+    # Add train accuracies if available
+    if train_accuracies is not None:
+        metrics_dict['train_accuracy'] = train_accuracies
+    
+    metrics_df = pd.DataFrame(metrics_dict)
     metrics_df.to_csv(save_dir / 'learning_curves_data.csv', index=False)
     
     # Log summary statistics
     logger.info(f"Learning curves data saved to {save_dir / 'learning_curves_data.csv'}")
-    logger.info(f"Final metrics - Train Loss: {train_losses[-1]:.4f}, Val Loss: {val_losses[-1]:.4f}, Accuracy: {accuracies[-1]:.4f}")
+    logger.info(f"Final metrics - Train Loss: {train_losses[-1]:.4f}, Val Loss: {val_losses[-1]:.4f}, Val Accuracy: {accuracies[-1]:.4f}")
 
 def find_optimal_lr(model_type: str, dataset_path: Path, batch_size: int = 32,
                   start_lr: float = 1e-7, end_lr: float = 1.0, num_iterations: int = 100,
@@ -418,7 +426,18 @@ def train_model(model_type: str, model_name: Optional[str] = None,
     train_losses = []
     val_losses = []
     accuracies = []
+    train_accuracies = []  # Store training accuracies for metrics
     best_val_acc = 0.0
+    
+    # Create CSV file for detailed epoch-by-epoch metrics
+    metrics_dir = Path(model_checkpoint_dir) / "metrics"
+    metrics_dir.mkdir(exist_ok=True, parents=True)
+    metrics_csv_path = metrics_dir / f"{model_name}_training_metrics.csv"
+    
+    # Write header to CSV file
+    with open(metrics_csv_path, 'w') as f:
+        header = "epoch,dataset,train_loss,train_acc,val_loss,val_acc,best_val_acc,lr,time_elapsed\n"
+        f.write(header)
     
     # Early stopping setup
     early_stopping_counter = 0
@@ -617,9 +636,24 @@ def train_model(model_type: str, model_name: Optional[str] = None,
             train_losses.append(epoch_loss)
             val_losses.append(val_epoch_loss)
             accuracies.append(accuracy)
+            train_accuracies.append(train_acc)  # Store the training accuracy
             
             # Calculate epoch time
             epoch_time = time.time() - start_time
+            
+            # Get current learning rate
+            current_lr = optimizer.param_groups[0]['lr']
+            
+            # Print validation accuracy to console for every epoch
+            print(f"\nEpoch {epoch+1}/{epochs} - Dataset: {selected_data_dir.name}")
+            print(f"Train Loss: {epoch_loss:.4f}, Train Acc: {train_acc:.4f}")
+            print(f"Val Loss: {val_epoch_loss:.4f}, Val Acc: {accuracy:.4f}, Best Val Acc: {best_val_acc:.4f}")
+            print(f"Learning Rate: {current_lr:.6f}, Time: {epoch_time:.2f}s")
+            
+            # Log metrics to CSV file
+            with open(metrics_csv_path, 'a') as f:
+                f.write(f"{epoch+1},{selected_data_dir.name},{epoch_loss:.6f},{train_acc:.6f},")
+                f.write(f"{val_epoch_loss:.6f},{accuracy:.6f},{best_val_acc:.6f},{current_lr:.8f},{epoch_time:.2f}\n")
             
             # Print more detailed accuracy metrics for Siamese networks
             if model_type == 'siamese':
@@ -724,7 +758,17 @@ def train_model(model_type: str, model_name: Optional[str] = None,
     logger.info("Saving final learning curves metrics...")
     try:
         plot_learning_curves(train_losses, val_losses, accuracies, 
-                          str(model_checkpoint_dir), model_name)
+                          str(model_checkpoint_dir), model_name,
+                          train_accuracies=train_accuracies)
+        
+        # Show final summary of training results
+        print("\n========== TRAINING COMPLETE ==========")
+        print(f"Model: {model_name}")
+        print(f"Best validation accuracy: {best_val_acc:.4f}")
+        print(f"Final validation accuracy: {accuracies[-1]:.4f}")
+        print(f"Detailed metrics saved to: {metrics_csv_path}")
+        print("======================================")
+        
     except Exception as e:
         logger.error(f"Error saving final metrics: {e}")
     
