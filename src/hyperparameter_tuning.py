@@ -47,19 +47,19 @@ TRIAL0_BASELINES = {
         "weight_decay": 1e-4, "dropout": 0.3, "scheduler": "cosine"
     },
     "arcface": {
-        # ArcFace is super picky about these values - these are more conservative now
-        "epochs": 100, "batch_size": 32, "learning_rate": 1e-4,  # Much lower LR needed
-        "weight_decay": 2e-4, "dropout": 0.3, "scheduler": "cosine",  # Increased regularization
-        "arcface_margin": 0.3, "arcface_scale": 20.0,  # Reduced scale to prevent explosion
-        "label_smoothing": 0.1,  # Increased label smoothing for stability
+        # ArcFace now uses even more conservative values based on empirical results
+        "epochs": 100, "batch_size": 32, "learning_rate": 3e-4,  # Balanced learning rate
+        "weight_decay": 1e-3, "dropout": 0.3, "scheduler": "cosine",  # Higher regularization
+        "arcface_margin": 0.15, "arcface_scale": 14.0,  # Much more conservative values
+        "label_smoothing": 0.15,  # Further increased label smoothing for stability
         "use_lr_warmup": True,  # Need this or training fails
-        "warmup_epochs": 20,  # Extended warmup period
+        "warmup_epochs": 25,  # Extended warmup period further
         "use_gradient_clipping": True,  # Always use gradient clipping
-        "clip_grad_norm": 0.5,  # More aggressive clipping
+        "clip_grad_norm": 0.3,  # More aggressive clipping
         "optimizer": "AdamW",  # Works better than SGD
         "use_amsgrad": True,  # Helps reach convergence
         "use_progressive_margin": True,  # Always use progressive margin
-        "initial_margin_factor": 0.0,  # Always start at zero margin
+        "initial_margin_factor": 0.0,  # Always start at zero margin 
         "easy_margin": True  # Always use easy margin for stability
     },
     "cnn": {
@@ -637,10 +637,10 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
             
             # Apply model-specific scaling factors
             if model_type == 'arcface':
-                # More conservative range for ArcFace
-                min_lr = max(1e-5, optimal_lr / 5)
-                max_lr = min(1e-3, optimal_lr * 3)
-                logger.info(f"Using ArcFace-adjusted LR range: {min_lr:.2e} to {max_lr:.2e}")
+                # Much more conservative range for ArcFace
+                min_lr = max(5e-5, optimal_lr / 10)
+                max_lr = min(5e-4, optimal_lr / 2)
+                logger.info(f"Using very conservative ArcFace LR range: {min_lr:.2e} to {max_lr:.2e}")
             elif model_type == 'siamese':
                 # Adjusted range for Siamese
                 min_lr = max(1e-5, optimal_lr / 4)
@@ -660,10 +660,10 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
     else:
         params['learning_rate'] = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
     
-    # Increased weight decay range for better regularization, especially important for ArcFace
+    # Significantly increased weight decay range for better regularization, especially important for ArcFace
     if model_type == 'arcface':
-        params['weight_decay'] = trial.suggest_float('weight_decay', 1e-4, 5e-3, log=True)  # Higher weight decay for ArcFace
-        logger.info(f"Using increased weight decay range for ArcFace: [1e-4, 5e-3]")
+        params['weight_decay'] = trial.suggest_float('weight_decay', 5e-4, 2e-2, log=True)  # Much higher weight decay for ArcFace
+        logger.info(f"Using aggressive weight decay range for ArcFace: [5e-4, 2e-2]")
     else:
         params['weight_decay'] = trial.suggest_float('weight_decay', 1e-5, 1e-3, log=True)
     
@@ -695,11 +695,11 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
         logger.info(f"ArcFace options: wider_range={use_wider_range}, easy_margin={include_easy_margin}, "
                   f"prog_margin={include_prog_margin}, grad_clip={include_gradient_clip}, amsgrad={include_amsgrad}")
         
-        # Always use conservative scale values to prevent loss explosion
-        # Scale range reduced to 16.0-24.0 max as suggested
-        params['arcface_margin'] = trial.suggest_float('arcface_margin', 0.2, 0.5)  # Safer margin range
-        params['arcface_scale'] = trial.suggest_float('arcface_scale', 16.0, 24.0)  # Reduced scale range
-        logger.info(f"Using conservative ranges: margin=[0.2-0.5], scale=[16.0-24.0]")
+        # Use even more conservative scale values to prevent loss explosion
+        # Further reduced scale range to improve stability
+        params['arcface_margin'] = trial.suggest_float('arcface_margin', 0.1, 0.3)  # Very conservative margin range
+        params['arcface_scale'] = trial.suggest_float('arcface_scale', 12.0, 18.0)  # Further reduced scale range
+        logger.info(f"Using reduced ranges: margin=[0.1-0.3], scale=[12.0-18.0] for better stability")
         
         # Easy margin makes training more stable
         if include_easy_margin:
@@ -833,10 +833,13 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
             initial_margin_factor = params.get('initial_margin_factor', 0.0) 
             new_arcface.margin_factor = initial_margin_factor
             
-            # Set a conservative scale factor to prevent exploding loss
-            new_arcface.scale_factor = 0.3  # Start with 30% of final scale
+            # Set a much more conservative scale factor to prevent exploding loss
+            new_arcface.scale_factor = 0.2  # Start with just 20% of final scale
             
-            logger.info(f"Configured progressive margin with initial_factor={new_arcface.margin_factor}, scale_factor=0.3")
+            # Increase the warm-up periods to ensure stability
+            new_arcface.warm_up_epochs = params.get('warmup_epochs', 20)
+            
+            logger.info(f"Configured progressive margin with initial_factor={new_arcface.margin_factor}, scale_factor={new_arcface.scale_factor}")
             logger.info(f"Using forced warm-up for {new_arcface.warm_up_epochs} epochs to improve stability")
                 
             # Replace the old layer
@@ -920,8 +923,18 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
                     # Handle ArcFace models which need labels during training
                     if model_type == 'arcface' and model.training:
                         outputs = model(inputs, labels=targets)  # Pass labels to ArcFace model
+                        
+                        # Calculate a separate logits-only loss without margin penalty for reporting
+                        # This makes training and validation losses comparable
+                        with torch.no_grad():
+                            embeddings = model.get_embedding(inputs)
+                            normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+                            class_centers = F.normalize(model.arcface.weight, p=2, dim=1)
+                            logits = torch.matmul(normalized_embeddings, class_centers.t()) * model.arcface.s
+                            report_loss = criterion(logits, targets)
                     else:
                         outputs = model(inputs)
+                        report_loss = None
                     
                     loss = criterion(outputs, targets)
                 
@@ -943,8 +956,18 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
                 # Handle ArcFace models which need labels during training
                 if model_type == 'arcface' and model.training:
                     outputs = model(inputs, labels=targets)  # Pass labels to ArcFace model
+                    
+                    # Calculate a separate logits-only loss without margin penalty for reporting
+                    # This makes training and validation losses comparable
+                    with torch.no_grad():
+                        embeddings = model.get_embedding(inputs)
+                        normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+                        class_centers = F.normalize(model.arcface.weight, p=2, dim=1)
+                        logits = torch.matmul(normalized_embeddings, class_centers.t()) * model.arcface.s
+                        report_loss = criterion(logits, targets)
                 else:
                     outputs = model(inputs)
+                    report_loss = None
                     
                 loss = criterion(outputs, targets)
                 loss.backward()
@@ -956,7 +979,12 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
                     
                 optimizer.step()
             
-            train_loss += loss.item()
+            # Use the corrected loss value for ArcFace for better comparison with validation
+            if model_type == 'arcface' and report_loss is not None:
+                train_loss += report_loss.item()  # This loss doesn't include the margin penalty
+            else:
+                train_loss += loss.item()
+                
             _, predicted = outputs.max(1)
             train_total += targets.size(0)
             train_correct += predicted.eq(targets).sum().item()
