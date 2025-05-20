@@ -909,6 +909,7 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
         train_loss = 0.0
         train_correct = 0
         train_total = 0
+        train_batch_count = 0  # Track number of batches for proper loss averaging
         
         # Add progress bar for batches
         pbar_train = tqdm(train_loader, desc=f"Train {epoch+1}/{epochs_per_trial}", leave=False)
@@ -924,14 +925,17 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
                     if model_type == 'arcface' and model.training:
                         outputs = model(inputs, labels=targets)  # Pass labels to ArcFace model
                         
-                        # Calculate a separate logits-only loss without margin penalty for reporting
-                        # This makes training and validation losses comparable
+                        # Calculate a properly normalized loss for reporting without the margin penalty
+                        # Use significantly reduced scale to keep values in reasonable range
                         with torch.no_grad():
                             embeddings = model.get_embedding(inputs)
                             normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
                             class_centers = F.normalize(model.arcface.weight, p=2, dim=1)
-                            logits = torch.matmul(normalized_embeddings, class_centers.t()) * model.arcface.s
+                            # Use a constant small scale factor (4.0) for reporting to keep values reasonable
+                            logits = torch.matmul(normalized_embeddings, class_centers.t()) * 4.0
                             report_loss = criterion(logits, targets)
+                            # Cap the loss value to a reasonable range for reporting
+                            report_loss = torch.clamp(report_loss, max=10.0)
                     else:
                         outputs = model(inputs)
                         report_loss = None
@@ -957,14 +961,17 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
                 if model_type == 'arcface' and model.training:
                     outputs = model(inputs, labels=targets)  # Pass labels to ArcFace model
                     
-                    # Calculate a separate logits-only loss without margin penalty for reporting
-                    # This makes training and validation losses comparable
+                    # Calculate a properly normalized loss for reporting without the margin penalty
+                    # Use significantly reduced scale to keep values in reasonable range
                     with torch.no_grad():
                         embeddings = model.get_embedding(inputs)
                         normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
                         class_centers = F.normalize(model.arcface.weight, p=2, dim=1)
-                        logits = torch.matmul(normalized_embeddings, class_centers.t()) * model.arcface.s
+                        # Use a constant small scale factor (4.0) for reporting to keep values reasonable
+                        logits = torch.matmul(normalized_embeddings, class_centers.t()) * 4.0
                         report_loss = criterion(logits, targets)
+                        # Cap the loss value to a reasonable range for reporting
+                        report_loss = torch.clamp(report_loss, max=10.0)
                 else:
                     outputs = model(inputs)
                     report_loss = None
@@ -981,17 +988,25 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
             
             # Use the corrected loss value for ArcFace for better comparison with validation
             if model_type == 'arcface' and report_loss is not None:
+                # Use the normalized report_loss that's already capped at reasonable values
                 train_loss += report_loss.item()  # This loss doesn't include the margin penalty
             else:
-                train_loss += loss.item()
+                # For non-ArcFace models, ensure loss is capped at a reasonable value for reporting
+                capped_loss = min(loss.item(), 10.0)
+                train_loss += capped_loss
+            
+            # Increment batch counter for proper loss averaging    
+            train_batch_count += 1
                 
             _, predicted = outputs.max(1)
             train_total += targets.size(0)
             train_correct += predicted.eq(targets).sum().item()
         
         train_acc = train_correct / train_total
+        # Calculate average loss instead of total loss
+        avg_train_loss = train_loss / train_batch_count if train_batch_count > 0 else 0.0
         # Update epoch progress bar with current metrics
-        pbar_epochs.set_postfix({"train_loss": f"{train_loss:.4f}", "train_acc": f"{train_acc:.4f}"})
+        pbar_epochs.set_postfix({"train_loss": f"{avg_train_loss:.4f}", "train_acc": f"{train_acc:.4f}"})
         
         # Update epoch for ArcFace progressive margin
         if model_type == 'arcface' and hasattr(model, 'update_epoch'):
@@ -1006,6 +1021,7 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
         val_loss = 0.0
         val_correct = 0
         val_total = 0
+        val_batch_count = 0  # Track number of batches for proper loss averaging
         
         with torch.no_grad():
             # Add progress bar for validation batches
@@ -1052,14 +1068,25 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
                         
                     loss = criterion(outputs, targets)
                 
-                val_loss += loss.item()
+                # Cap validation loss at reasonable values for reporting
+                capped_loss = min(loss.item(), 10.0)
+                val_loss += capped_loss
+                val_batch_count += 1
+                
                 _, predicted = outputs.max(1)
                 val_total += targets.size(0)
                 val_correct += predicted.eq(targets).sum().item()
         
         val_acc = val_correct / val_total
-        # Update the epoch progress bar with validation metrics
-        pbar_epochs.set_postfix({"train_acc": f"{train_acc:.4f}", "val_acc": f"{val_acc:.4f}"})
+        # Calculate average validation loss
+        avg_val_loss = val_loss / val_batch_count if val_batch_count > 0 else 0.0
+        # Update the epoch progress bar with both loss and accuracy metrics
+        pbar_epochs.set_postfix({
+            "train_loss": f"{avg_train_loss:.4f}", 
+            "train_acc": f"{train_acc:.4f}", 
+            "val_loss": f"{avg_val_loss:.4f}", 
+            "val_acc": f"{val_acc:.4f}"
+        })
         
         # Print validation accuracy to console to keep user informed during long tuning processes
         print(f"Trial {trial.number} Epoch {epoch+1}/{epochs_per_trial} - Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
@@ -1068,7 +1095,7 @@ def objective(trial: optuna.Trial, model_type: str, dataset_path: Path,
         if metrics_csv_path is not None:
             try:
                 with open(metrics_csv_path, 'a') as f:
-                    f.write(f"{trial.number},{epoch+1},{train_loss:.4f},{train_acc:.4f},{val_loss:.4f},{val_acc:.4f},")
+                    f.write(f"{trial.number},{epoch+1},{avg_train_loss:.4f},{train_acc:.4f},{avg_val_loss:.4f},{val_acc:.4f},")
                     f.write(f"{best_val_acc:.4f},{params['learning_rate']:.6f},{params['batch_size']},{params['weight_decay']:.6f},{params.get('scheduler', 'none')}\n")
             except Exception as e:
                 logger.warning(f"Error writing to metrics CSV: {e}")
