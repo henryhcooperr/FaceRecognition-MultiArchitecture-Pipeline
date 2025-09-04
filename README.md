@@ -1,5 +1,4 @@
-# Face Recognition Project - Simplified Version
-
+# Face Recognition Project
 This is a simplified version of the face recognition project, designed to be more focused on core functionality and easier to understand for presentation purposes.
 
 ## Features
