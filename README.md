@@ -110,13 +110,13 @@ python run_app.py --browser
 
 Launches the interactive Streamlit face recognition demo using your webcam. The enhanced demo includes:
 
-- 🎥 Real-time face detection using MTCNN
-- 👤 Face recognition with FaceNet embeddings
-- ➕ Easy interface to add new faces to the recognition system
-- 🔄 Face tracking between frames for stable recognition
-- 📝 Edit and manage known faces
-- 📊 Recognition history tracking
-- 🔧 Automatic prompt for unrecognized faces
+- Real-time face detection using MTCNN
+- Face recognition with FaceNet embeddings
+- Easy interface to add new faces to the recognition system
+- Face tracking between frames for stable recognition
+- Edit and manage known faces
+- Recognition history tracking
+- Automatic prompt for unrecognized faces
 
 #### Command Line Options
 
